@@ -24,7 +24,6 @@ PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 AGENT_SCRIPT="/usr/local/sbin/netwatch-agent.sh"
 CONFIG_FILE="/etc/default/netwatch-agent"
 SYSTEMD_UNIT="/etc/systemd/system/netwatch-agent.service"
-STATE_DIR="/run/netwatch-agent"
 
 # Source files
 SRC_AGENT="$PROJECT_ROOT/src/netwatch-agent.sh"
@@ -61,7 +60,7 @@ if [[ $EUID -ne 0 ]]; then
 fi
 
 # Check if systemd is available
-if ! command -v systemctl >/dev/null 2>&1; then
+if [[ ! -x /usr/bin/systemctl ]]; then
   log_error "systemd is required but not found"
   exit 1
 fi
@@ -148,18 +147,18 @@ fi
 #
 
 log_info "Reloading systemd daemon"
-systemctl daemon-reload
+/usr/bin/systemctl daemon-reload
 
 log_info "Enabling netwatch-agent service"
-systemctl enable netwatch-agent
+/usr/bin/systemctl enable netwatch-agent
 
 # Check if service is already running
-if systemctl is-active --quiet netwatch-agent; then
+if /usr/bin/systemctl is-active --quiet netwatch-agent; then
   log_info "Service is already running, restarting"
-  systemctl restart netwatch-agent
+  /usr/bin/systemctl restart netwatch-agent
 else
   log_info "Starting netwatch-agent service"
-  systemctl start netwatch-agent
+  /usr/bin/systemctl start netwatch-agent
 fi
 
 #
@@ -171,13 +170,13 @@ log_info "Installation complete!"
 echo
 
 echo "Service status:"
-systemctl status netwatch-agent --no-pager --lines=5 || true
+/usr/bin/systemctl status netwatch-agent --no-pager --lines=5 || true
 
 echo
 echo "Quick reference:"
 echo "  - View logs:      journalctl -u netwatch-agent -f"
-echo "  - Stop service:   systemctl stop netwatch-agent"
-echo "  - Disable:        systemctl disable netwatch-agent"
+echo "  - Stop service:   /usr/bin/systemctl stop netwatch-agent"
+echo "  - Disable:        /usr/bin/systemctl disable netwatch-agent"
 echo "  - Pause watchdog: touch /etc/netwatch-agent.disable"
 echo "  - Resume:         rm /etc/netwatch-agent.disable"
 echo "  - Edit config:    nano $CONFIG_FILE"
@@ -185,4 +184,4 @@ echo "  - Uninstall:      $SCRIPT_DIR/uninstall.sh"
 echo
 
 log_info "Configuration: $CONFIG_FILE"
-log_info "Edit the config and restart: systemctl restart netwatch-agent"
+log_info "Edit the config and restart: /usr/bin/systemctl restart netwatch-agent"

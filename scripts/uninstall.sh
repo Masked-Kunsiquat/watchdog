@@ -72,16 +72,16 @@ fi
 # Stop and disable service
 #
 
-if systemctl is-active --quiet netwatch-agent 2>/dev/null; then
+if /usr/bin/systemctl is-active --quiet netwatch-agent 2>/dev/null; then
   log_info "Stopping netwatch-agent service"
-  systemctl stop netwatch-agent
+  /usr/bin/systemctl stop netwatch-agent
 else
   log_info "Service is not running"
 fi
 
-if systemctl is-enabled --quiet netwatch-agent 2>/dev/null; then
+if /usr/bin/systemctl is-enabled --quiet netwatch-agent 2>/dev/null; then
   log_info "Disabling netwatch-agent service"
-  systemctl disable netwatch-agent
+  /usr/bin/systemctl disable netwatch-agent
 else
   log_info "Service is not enabled"
 fi
@@ -98,7 +98,7 @@ else
 fi
 
 log_info "Reloading systemd daemon"
-systemctl daemon-reload
+/usr/bin/systemctl daemon-reload
 
 #
 # Remove agent script
