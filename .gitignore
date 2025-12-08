@@ -18,6 +18,7 @@ debian/netwatch-agent/
 # Editor and IDE
 .vscode/
 .idea/
+.claude/
 *.swp
 *.swo
 *~
