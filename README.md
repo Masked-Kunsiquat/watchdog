@@ -124,9 +124,12 @@ This project follows the specification in [AGENTS.md](AGENTS.md). All code must 
 
 ## Status
 
-**Current Version**: 0.1.0-dev
-**Status**: In development
-**Target**: Production-ready v0.1.0
+**Current Version**: v0.1.0-dev (Phase 1 complete)
+**Status**: Core agent implemented, installers pending
+**Next Release**: v0.2.0 (Phase 2-3: Installers + testing)
+**Target**: Production-ready v1.0.0
+
+See [CHANGELOG.md](CHANGELOG.md) for detailed version history.
 
 ---
 
