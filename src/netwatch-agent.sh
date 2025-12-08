@@ -63,7 +63,8 @@ now() {
 #
 parallel_probe() {
   local ok=0
-  local -a targets=($TARGETS)
+  local -a targets
+  read -ra targets <<< "$TARGETS"
 
   # Prefer fping for efficient parallel probing
   if [[ "$USE_FPING" != "no" ]] && [[ -x /usr/sbin/fping ]]; then
