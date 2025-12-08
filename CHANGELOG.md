@@ -8,10 +8,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Planned for v1.0.0
-- Unit tests and integration tests (Phase 4)
 - Comprehensive operations documentation (Phase 5)
 - Optional .deb packaging
 - Production hardening and final QA
+
+## [v0.3.0-beta] - 2025-12-08
+
+Phase 4 complete - comprehensive testing suite ready.
+
+### Added
+- `tests/unit-tests.sh` - Unit test suite with:
+  - Mock-based probe function testing
+  - fping output parsing validation
+  - ping fallback mode testing
+  - MIN_OK threshold verification
+  - Outage timer logic tests
+  - Cooldown enforcement tests
+  - Boot grace calculation tests
+  - Color-coded test results with pass/fail summary
+- Enhanced `tests/smoke-test.sh` with:
+  - 6 comprehensive test scenarios
+  - Unreachable target testing (reboot trigger)
+  - Reachable target testing (no false positives)
+  - Disable file functionality validation
+  - Boot grace period verification
+  - MIN_OK threshold testing
+  - Ping fallback mode validation
+  - Verbose mode for debugging (--verbose flag)
+  - Automatic cleanup with trap handlers
+- `docs/integration-testing.md` - Complete integration test guide with:
+  - 8 detailed manual test procedures
+  - Network simulation instructions (iptables)
+  - Timing accuracy validation
+  - Performance benchmarks (±5% accuracy requirement)
+  - Regression test checklist
+  - Troubleshooting guide for failed tests
+
+### Quality
+- All scripts validated for shellcheck compliance
+- Test coverage for all critical paths
+- Documented test procedures for operators
+- Automated smoke tests for CI/CD integration
+
+### Testing
+- 9 unit tests covering probe logic and timing calculations
+- 6 automated smoke tests for quick validation
+- 8 documented integration tests for production readiness
+- Performance validation framework (timing accuracy)
 
 ## [v0.2.0-alpha] - 2025-12-08
 
