@@ -1,0 +1,42 @@
+# Build artifacts
+*.deb
+*.tar.gz
+*.zip
+
+# Debian packaging
+debian/files
+debian/*.debhelper
+debian/*.log
+debian/*.substvars
+debian/netwatch-agent/
+
+# State and runtime files
+/run/
+*.pid
+*.state
+
+# Editor and IDE
+.vscode/
+.idea/
+.claude/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Logs
+*.log
+
+# Backup files
+*.bak
+*.backup
+*.orig
+
+# Test artifacts
+tests/*.tmp
+tests/output/
+coverage/
+
+# Distribution
+dist/
+build/
