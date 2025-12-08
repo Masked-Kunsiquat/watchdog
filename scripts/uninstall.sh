@@ -42,6 +42,10 @@ done
 #
 # Utility functions
 #
+# Note: These logging functions are duplicated in install.sh to keep both
+# scripts fully self-contained and portable (no sourcing dependencies).
+# This is intentional for simple installer/uninstaller pairs.
+#
 
 log_info() {
   echo -e "${GREEN}[INFO]${NC} $*"
