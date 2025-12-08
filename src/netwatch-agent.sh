@@ -43,16 +43,16 @@ mkdir -p "$STATE_DIR"
 
 # Log a message to syslog/journald (fallback to stderr if logger unavailable)
 log() {
-  if command -v logger >/dev/null 2>&1; then
-    logger -t "$TAG" -- "$*"
+  if [[ -x /usr/bin/logger ]]; then
+    /usr/bin/logger -t "$TAG" -- "$*"
   else
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $TAG: $*" >&2
+    echo "[$(/usr/bin/date '+%Y-%m-%d %H:%M:%S')] $TAG: $*" >&2
   fi
 }
 
 # Get current Unix timestamp
 now() {
-  date +%s
+  /usr/bin/date +%s
 }
 
 #
@@ -66,12 +66,12 @@ parallel_probe() {
   local -a targets=($TARGETS)
 
   # Prefer fping for efficient parallel probing
-  if [[ "$USE_FPING" != "no" ]] && command -v fping >/dev/null 2>&1; then
+  if [[ "$USE_FPING" != "no" ]] && [[ -x /usr/sbin/fping ]]; then
     local timeout_ms=$((PING_TIMEOUT * 1000))
     local output
 
     # Run fping and capture output (redirects stderr to stdout)
-    output=$(fping -c "$PING_COUNT" -t "$timeout_ms" -q "${targets[@]}" 2>&1 || true)
+    output=$(/usr/sbin/fping -c "$PING_COUNT" -t "$timeout_ms" -q "${targets[@]}" 2>&1 || true)
 
     # Parse fping summary lines: look for "xmt/rcv/%loss" with rcv >= 1
     while IFS= read -r line; do
@@ -89,7 +89,7 @@ parallel_probe() {
     local -a pids=()
 
     for host in "${targets[@]}"; do
-      (ping -n -q -c "$PING_COUNT" -W "$PING_TIMEOUT" "$host" >/dev/null 2>&1) &
+      (/bin/ping -n -q -c "$PING_COUNT" -W "$PING_TIMEOUT" "$host" >/dev/null 2>&1) &
       pids+=($!)
     done
 
@@ -112,17 +112,17 @@ perform_reboot() {
   log "Initiating host reboot due to continuous WAN outage"
 
   # Sync filesystems
-  sync 2>/dev/null || true
+  /bin/sync 2>/dev/null || true
 
   # Attempt graceful systemd reboot, fallback to direct reboot
-  if systemctl reboot -i 2>/dev/null; then
+  if /usr/bin/systemctl reboot -i 2>/dev/null; then
     log "Reboot command sent via systemctl"
   else
     /sbin/reboot now
   fi
 
   # Sleep to prevent loop thrashing during shutdown
-  sleep 30
+  /bin/sleep 30
 }
 
 #
@@ -130,16 +130,16 @@ perform_reboot() {
 #
 
 # Signal systemd that we're ready (if systemd-notify is available)
-if command -v systemd-notify >/dev/null 2>&1; then
-  systemd-notify --ready || true
+if [[ -x /usr/bin/systemd-notify ]]; then
+  /usr/bin/systemd-notify --ready || true
 fi
 
 # Boot grace period: wait if system just booted
-UPTIME_SEC=$(cut -d. -f1 /proc/uptime)
+UPTIME_SEC=$(/usr/bin/cut -d. -f1 /proc/uptime)
 if (( UPTIME_SEC < BOOT_GRACE )); then
   WAIT_TIME=$((BOOT_GRACE - UPTIME_SEC))
   log "Boot grace: waiting ${WAIT_TIME}s (system uptime: ${UPTIME_SEC}s)"
-  sleep "$WAIT_TIME"
+  /bin/sleep "$WAIT_TIME"
 fi
 
 log "Starting WAN watchdog (targets: $TARGETS, threshold: ${MIN_OK}/${TARGETS// /,}, window: ${DOWN_WINDOW_SECONDS}s)"
@@ -155,7 +155,7 @@ while true; do
   # Check for disable file
   if [[ -f "$DISABLE_FILE" ]]; then
     log "Watchdog disabled via $DISABLE_FILE"
-    sleep 30
+    /bin/sleep 30
     continue
   fi
 
@@ -194,7 +194,7 @@ while true; do
           fi
 
           # Sleep after reboot trigger to prevent tight loop
-          sleep 30
+          /bin/sleep 30
         else
           # Cooldown active
           COOLDOWN_REMAINING=$((COOLDOWN_SECONDS - TIME_SINCE_REBOOT))
@@ -205,10 +205,10 @@ while true; do
   fi
 
   # Send watchdog heartbeat to systemd (if configured)
-  if command -v systemd-notify >/dev/null 2>&1; then
-    systemd-notify --watchdog || true
+  if [[ -x /usr/bin/systemd-notify ]]; then
+    /usr/bin/systemd-notify --watchdog || true
   fi
 
   # Sleep until next check
-  sleep "$CHECK_INTERVAL"
+  /bin/sleep "$CHECK_INTERVAL"
 done
