@@ -7,11 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Planned for v0.2.0
-- Installer and uninstaller scripts (Phase 2)
+### Planned for v1.0.0
 - Unit tests and integration tests (Phase 4)
 - Comprehensive operations documentation (Phase 5)
 - Optional .deb packaging
+- Production hardening and final QA
+
+## [v0.2.0-alpha] - 2025-12-08
+
+Phases 1-3 complete - installer ready for testing.
+
+### Added
+- `scripts/install.sh` - Idempotent installer with:
+  - Root/systemd preflight checks
+  - Config preservation on upgrades
+  - Automatic fping detection with hints
+  - Service enable + start automation
+  - Color-coded user feedback
+- `scripts/uninstall.sh` - Clean uninstaller with:
+  - Service stop and disable
+  - Complete file cleanup
+  - Optional config preservation (--keep-config)
+  - Backup management
+- `.gitattributes` - Enforce Unix line endings for scripts
+
+### Security
+- All binaries use absolute paths (prevents PATH attacks)
+- Shellcheck-clean code (SC2206, SC1017 resolved)
+- Unix line endings enforced for Linux compatibility
+
+### Quality
+- Word splitting fixed with proper `read -ra` usage
+- Cross-platform development support (Windows + Linux)
+- Strict error handling in all scripts
 
 ## [v0.1.0-dev] - 2025-12-08
 
