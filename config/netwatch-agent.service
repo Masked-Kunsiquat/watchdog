@@ -1,0 +1,23 @@
+[Unit]
+Description=Netwatch WAN Watchdog (reboots host after continuous WAN loss)
+Documentation=https://github.com/netwatch/netwatch
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+EnvironmentFile=-/etc/default/netwatch-agent
+ExecStart=/usr/local/sbin/netwatch-agent.sh
+Restart=always
+RestartSec=5
+
+# Hardening (optional - can be enabled for additional security)
+# ProtectSystem=strict
+# ProtectHome=yes
+# NoNewPrivileges=true
+
+# Optional: enable service-level watchdog (requires systemd-notify --watchdog in agent)
+# WatchdogSec=30s
+
+[Install]
+WantedBy=multi-user.target
