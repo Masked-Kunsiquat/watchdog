@@ -396,6 +396,16 @@ probe_icmp() {
     FPING_BIN="/usr/bin/fping"
   fi
 
+   # Determine ping binary (prefer /bin, fallback to /usr/bin)
+  local PING_BIN="/bin/ping"
+  if [[ ! -x "$PING_BIN" ]] && [[ -x /usr/bin/ping ]]; then
+    PING_BIN="/usr/bin/ping"
+  fi
+  if [[ ! -x "$PING_BIN" ]]; then
+    log "ERROR: ping binary not found (tried /bin/ping and /usr/bin/ping)"
+    return 1
+  fi
+
   # Prefer fping for efficient parallel probing
   if [[ "$USE_FPING" != "no" ]] && [[ -x "$FPING_BIN" ]]; then
     log "using fping for parallel ICMP probing"
@@ -425,7 +435,7 @@ probe_icmp() {
       ok=0
       local -a pids=()
       for host in "${targets[@]}"; do
-        (/bin/ping -n -q -c "$PING_COUNT" -W "$PING_TIMEOUT" "$host" >/dev/null 2>&1) &
+        ("$PING_BIN" -n -q -c "$PING_COUNT" -W "$PING_TIMEOUT" "$host" >/dev/null 2>&1) &
         pids+=($!)
       done
       for pid in "${pids[@]}"; do
@@ -440,7 +450,7 @@ probe_icmp() {
     local -a pids=()
 
     for host in "${targets[@]}"; do
-      (/bin/ping -n -q -c "$PING_COUNT" -W "$PING_TIMEOUT" "$host" >/dev/null 2>&1) &
+      ("$PING_BIN" -n -q -c "$PING_COUNT" -W "$PING_TIMEOUT" "$host" >/dev/null 2>&1) &
       pids+=($!)
     done
 
