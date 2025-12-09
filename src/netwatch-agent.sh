@@ -421,6 +421,7 @@ probe_icmp() {
     done <<<"$output"
   else
     # Fallback: parallel background pings
+    log "using ping for ICMP probing (fping unavailable or disabled)"
     local -a pids=()
 
     for host in "${targets[@]}"; do
