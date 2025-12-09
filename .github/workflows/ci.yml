@@ -70,8 +70,13 @@ jobs:
           DISABLE_FILE="/etc/netwatch-agent.disable"
           EOF
 
-          # Start service
-          sudo systemctl restart netwatch-agent
+          # Start service and verify restart succeeded
+          if ! sudo systemctl restart netwatch-agent; then
+            echo "ERROR: Failed to restart netwatch-agent service"
+            echo "Recent journal output:"
+            sudo journalctl -u netwatch-agent --no-pager -n 50
+            exit 1
+          fi
 
           # Wait for boot grace
           sleep 10
@@ -105,12 +110,12 @@ jobs:
           # Install the agent
           sudo ./scripts/install.sh
 
-          # Configure for HTTP mode with Google/Cloudflare (should return 200)
+          # Configure for HTTP mode with valid domain names (should return 200)
           sudo tee /etc/default/netwatch-agent > /dev/null <<'EOF'
           HEALTH_CHECK_MODE="http"
-          HTTP_TARGETS="https://1.1.1.1 https://www.google.com"
+          HTTP_TARGETS="https://www.google.com https://www.cloudflare.com https://one.one.one.one"
           HTTP_EXPECTED_CODE="200"
-          MIN_OK=1
+          MIN_OK=2
           PING_TIMEOUT=5
           CHECK_INTERVAL=5
           DOWN_WINDOW_SECONDS=30
@@ -119,8 +124,13 @@ jobs:
           DISABLE_FILE="/etc/netwatch-agent.disable"
           EOF
 
-          # Start service
-          sudo systemctl restart netwatch-agent
+          # Start service and verify restart succeeded
+          if ! sudo systemctl restart netwatch-agent; then
+            echo "ERROR: Failed to restart netwatch-agent service"
+            echo "Recent journal output:"
+            sudo journalctl -u netwatch-agent --no-pager -n 50
+            exit 1
+          fi
 
           # Wait for boot grace
           sleep 10
@@ -253,10 +263,14 @@ jobs:
 
       - name: Test with unreachable targets (should detect outage)
         run: |
+          set -e  # Exit on any command failure
+
           # Block ICMP to simulate outage
+          echo "Inserting iptables rules to block ICMP..."
           sudo iptables -I OUTPUT -p icmp -d 8.8.8.8 -j DROP
           sudo iptables -I OUTPUT -p icmp -d 1.1.1.1 -j DROP
           sudo iptables -I OUTPUT -p icmp -d 9.9.9.9 -j DROP
+          echo "iptables rules inserted successfully"
 
           # Wait for checks to detect outage
           sleep 20

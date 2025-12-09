@@ -376,6 +376,7 @@ probe_icmp() {
 
   # Prefer fping for efficient parallel probing
   if [[ "$USE_FPING" != "no" ]] && [[ -x /usr/sbin/fping ]]; then
+    log "using fping for parallel ICMP probing"
     local timeout_ms=$((PING_TIMEOUT * 1000))
     local output
 
