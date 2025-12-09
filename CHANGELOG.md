@@ -11,13 +11,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 **Webhook Notifications**:
 - Flexible webhook system for external notifications (Discord, ntfy, Gotify, Notifiarr, Apprise, etc.)
-- Event-based notifications: `down`, `recovery`, `reboot`
-- Custom templating with variable substitution (`{EVENT}`, `{MESSAGE}`, `{HOSTNAME}`, `{TIMESTAMP}`, `{DURATION}`, etc.)
-- Configurable HTTP method, headers, and timeout
-- Event filtering (choose which events trigger webhooks)
+- Event-based notifications: `down`, `recovery`, `reboot`, `startup`, `health`
+- Custom templating with variable substitution (15+ variables: `{EVENT}`, `{MESSAGE}`, `{HOSTNAME}`, `{TIMESTAMP}`, `{DURATION}`, `{UPTIME}`, `{TOTAL_REBOOTS}`, etc.)
+- Configurable HTTP method, headers, timeout, and event filtering
 - Non-blocking background execution (doesn't delay reboot actions)
+- Persistent metrics tracking with availability calculations
 - Automatic JSON default format with opt-in custom templates
-- 7 configuration variables for complete control
+- 8 configuration variables (`WEBHOOK_ENABLED`, `WEBHOOK_URL`, `WEBHOOK_METHOD`, `WEBHOOK_EVENTS`, `WEBHOOK_TIMEOUT`, `WEBHOOK_HEALTH_INTERVAL`, `WEBHOOK_HEADERS`, `WEBHOOK_BODY_TEMPLATE`)
+- Startup notifications for post-reboot confirmation (sent if uptime < 10 minutes)
+- Periodic health reports with comprehensive metrics (configurable interval, default 24h)
 - Examples for 5+ popular notification services in config template
 
 ### Planned for Future Releases
