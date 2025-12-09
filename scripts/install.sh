@@ -5,7 +5,7 @@
 # Installs netwatch-agent to /usr/local/sbin with proper permissions,
 # systemd unit file, and configuration. Safe to run multiple times.
 #
-# Usage: sudo ./install.sh
+# Usage: ./install.sh   (run as root or with sudo)
 #
 
 set -Eeuo pipefail
@@ -53,10 +53,16 @@ log_error() {
 log_info "Netwatch WAN Watchdog Installer"
 echo
 
-# Check if running as root
+# Helper to run commands with sudo when not root
+# Helper to run commands with sudo when not root
+SUDO=""
 if [[ $EUID -ne 0 ]]; then
-  log_error "This script must be run as root (use sudo)"
-  exit 1
+  if command -v sudo >/dev/null 2>&1; then
+    SUDO="sudo"
+  else
+    log_error "This script must be run as root (sudo not available)"
+    exit 1
+  fi
 fi
 
 # Check if systemd is available
@@ -89,13 +95,13 @@ log_info "Preflight checks passed"
 
 if [[ -f "$AGENT_SCRIPT" ]]; then
   log_warn "Agent script exists, backing up to ${AGENT_SCRIPT}.bak"
-  cp "$AGENT_SCRIPT" "${AGENT_SCRIPT}.bak"
+  $SUDO cp "$AGENT_SCRIPT" "${AGENT_SCRIPT}.bak"
 fi
 
 log_info "Installing agent script to $AGENT_SCRIPT"
-cp "$SRC_AGENT" "$AGENT_SCRIPT"
-chmod 0755 "$AGENT_SCRIPT"
-chown root:root "$AGENT_SCRIPT"
+$SUDO cp "$SRC_AGENT" "$AGENT_SCRIPT"
+$SUDO chmod 0755 "$AGENT_SCRIPT"
+$SUDO chown root:root "$AGENT_SCRIPT"
 
 #
 # Install configuration file
@@ -104,14 +110,14 @@ chown root:root "$AGENT_SCRIPT"
 if [[ -f "$CONFIG_FILE" ]]; then
   log_warn "Config file exists, preserving existing: $CONFIG_FILE"
   log_info "New config template available at: ${CONFIG_FILE}.new"
-  cp "$SRC_CONFIG" "${CONFIG_FILE}.new"
-  chmod 0640 "${CONFIG_FILE}.new"
-  chown root:root "${CONFIG_FILE}.new"
+  $SUDO cp "$SRC_CONFIG" "${CONFIG_FILE}.new"
+  $SUDO chmod 0640 "${CONFIG_FILE}.new"
+  $SUDO chown root:root "${CONFIG_FILE}.new"
 else
   log_info "Installing config file to $CONFIG_FILE"
-  cp "$SRC_CONFIG" "$CONFIG_FILE"
-  chmod 0640 "$CONFIG_FILE"
-  chown root:root "$CONFIG_FILE"
+  $SUDO cp "$SRC_CONFIG" "$CONFIG_FILE"
+  $SUDO chmod 0640 "$CONFIG_FILE"
+  $SUDO chown root:root "$CONFIG_FILE"
 fi
 
 #
@@ -123,9 +129,9 @@ if [[ -f "$SYSTEMD_UNIT" ]]; then
 fi
 
 log_info "Installing systemd unit to $SYSTEMD_UNIT"
-cp "$SRC_UNIT" "$SYSTEMD_UNIT"
-chmod 0644 "$SYSTEMD_UNIT"
-chown root:root "$SYSTEMD_UNIT"
+$SUDO cp "$SRC_UNIT" "$SYSTEMD_UNIT"
+$SUDO chmod 0644 "$SYSTEMD_UNIT"
+$SUDO chown root:root "$SYSTEMD_UNIT"
 
 #
 # Check for fping (optional but recommended)
@@ -147,18 +153,18 @@ fi
 #
 
 log_info "Reloading systemd daemon"
-/usr/bin/systemctl daemon-reload
+$SUDO /usr/bin/systemctl daemon-reload
 
 log_info "Enabling netwatch-agent service"
-/usr/bin/systemctl enable netwatch-agent
+$SUDO /usr/bin/systemctl enable netwatch-agent
 
 # Check if service is already running
-if /usr/bin/systemctl is-active --quiet netwatch-agent; then
+if $SUDO /usr/bin/systemctl is-active --quiet netwatch-agent; then
   log_info "Service is already running, restarting"
-  /usr/bin/systemctl restart netwatch-agent
+  $SUDO /usr/bin/systemctl restart netwatch-agent
 else
   log_info "Starting netwatch-agent service"
-  /usr/bin/systemctl start netwatch-agent
+  $SUDO /usr/bin/systemctl start netwatch-agent
 fi
 
 #
@@ -170,7 +176,7 @@ log_info "Installation complete!"
 echo
 
 echo "Service status:"
-/usr/bin/systemctl status netwatch-agent --no-pager --lines=5 || true
+$SUDO /usr/bin/systemctl status netwatch-agent --no-pager --lines=5 || true
 
 echo
 echo "Quick reference:"
