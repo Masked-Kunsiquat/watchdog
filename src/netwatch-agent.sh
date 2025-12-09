@@ -18,8 +18,17 @@ PATH=/usr/sbin:/usr/bin:/sbin:/bin
 # Logging and runtime constants
 TAG="netwatch-agent"
 STATE_DIR="${STATE_DIR:-/run/netwatch-agent}"
-mkdir -p "$STATE_DIR" 2>/dev/null || STATE_DIR=/tmp/netwatch-agent-$$
-mkdir -p "$STATE_DIR"
+/bin/mkdir -p "$STATE_DIR" 2>/dev/null || STATE_DIR=/tmp/netwatch-agent-$$
+/bin/mkdir -p "$STATE_DIR"
+
+# Persistent state directory for metrics (falls back to STATE_DIR if unwritable)
+PERSIST_DIR="${PERSIST_DIR:-/var/lib/netwatch-agent}"
+if /bin/mkdir -p "$PERSIST_DIR" 2>/dev/null && /bin/touch "$PERSIST_DIR/.netwatch-test" 2>/dev/null; then
+  /bin/rm -f "$PERSIST_DIR/.netwatch-test" 2>/dev/null || true
+  METRICS_FILE="$PERSIST_DIR/metrics.dat"
+else
+  METRICS_FILE="$STATE_DIR/metrics.dat"
+fi
 
 # Load configuration from systemd EnvironmentFile
 [[ -r /etc/default/netwatch-agent ]] && . /etc/default/netwatch-agent
@@ -50,9 +59,6 @@ mkdir -p "$STATE_DIR"
 : "${WEBHOOK_EVENTS:=down,recovery,reboot,startup,health}"
 : "${WEBHOOK_TIMEOUT:=10}"
 : "${WEBHOOK_HEALTH_INTERVAL:=86400}"  # Daily health report (24 hours)
-
-# Metrics persistence
-METRICS_FILE="$STATE_DIR/metrics.dat"
 
 #
 # Utility functions
@@ -99,6 +105,9 @@ load_metrics() {
     # shellcheck disable=SC1090
     . "$METRICS_FILE" 2>/dev/null || true
   fi
+
+  # Always reset service runtime to current start (counters remain persistent)
+  SERVICE_START_TIME=$(now)
 }
 
 save_metrics() {
@@ -110,6 +119,8 @@ TOTAL_DOWNTIME_SECONDS=$TOTAL_DOWNTIME_SECONDS
 LAST_HEALTH_REPORT=$LAST_HEALTH_REPORT
 SERVICE_START_TIME=$SERVICE_START_TIME
 EOF
+  /bin/chmod 0600 "$METRICS_FILE" 2>/dev/null || true
+  /bin/chown root:root "$METRICS_FILE" 2>/dev/null || true
 }
 
 increment_metric() {
@@ -385,11 +396,22 @@ probe_icmp() {
     FPING_BIN="/usr/bin/fping"
   fi
 
+   # Determine ping binary (prefer /bin, fallback to /usr/bin)
+  local PING_BIN="/bin/ping"
+  if [[ ! -x "$PING_BIN" ]] && [[ -x /usr/bin/ping ]]; then
+    PING_BIN="/usr/bin/ping"
+  fi
+  if [[ ! -x "$PING_BIN" ]]; then
+    log "ERROR: ping binary not found (tried /bin/ping and /usr/bin/ping)"
+    return 1
+  fi
+
   # Prefer fping for efficient parallel probing
   if [[ "$USE_FPING" != "no" ]] && [[ -x "$FPING_BIN" ]]; then
     log "using fping for parallel ICMP probing"
     local timeout_ms=$((PING_TIMEOUT * 1000))
     local output
+    local fping_ok=0
 
     # Run fping and capture output (redirects stderr to stdout)
     output=$("$FPING_BIN" -c "$PING_COUNT" -t "$timeout_ms" -q "${targets[@]}" 2>&1 || true)
@@ -402,15 +424,33 @@ probe_icmp() {
         local rcv="${BASH_REMATCH[2]}"
         if (( rcv >= 1 )); then
           ((ok++))
+          ((fping_ok++))
         fi
       fi
     done <<<"$output"
+
+    # If fping reported zero successes, log why and fall back
+    if (( fping_ok == 0 )); then
+      log "fping returned zero replies (USE_FPING=${USE_FPING:-auto}); falling back to ping. fping output: ${output//$'\n'/ | }"
+      ok=0
+      local -a pids=()
+      for host in "${targets[@]}"; do
+        ("$PING_BIN" -n -q -c "$PING_COUNT" -W "$PING_TIMEOUT" "$host" >/dev/null 2>&1) &
+        pids+=($!)
+      done
+      for pid in "${pids[@]}"; do
+        if wait "$pid"; then
+          ((ok++))
+        fi
+      done
+    fi
   else
     # Fallback: parallel background pings
+    log "using ping for ICMP probing (fping unavailable or disabled)"
     local -a pids=()
 
     for host in "${targets[@]}"; do
-      (/bin/ping -n -q -c "$PING_COUNT" -W "$PING_TIMEOUT" "$host" >/dev/null 2>&1) &
+      ("$PING_BIN" -n -q -c "$PING_COUNT" -W "$PING_TIMEOUT" "$host" >/dev/null 2>&1) &
       pids+=($!)
     done
 
