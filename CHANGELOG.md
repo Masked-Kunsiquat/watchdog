@@ -7,9 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **HTTP/TCP Health Check Modes**: Alternative health check methods to ICMP ping
+  - TCP mode: Layer 4 TCP connection tests using netcat (bypasses ICMP filters)
+  - HTTP mode: Layer 7 HTTP/HTTPS request validation using curl (full stack verification)
+  - Configuration variables: `HEALTH_CHECK_MODE`, `TCP_TARGETS`, `HTTP_TARGETS`, `HTTP_EXPECTED_CODE`
+  - Parallel probing for all modes (maintains timing determinism)
+  - Automatic dependency validation at startup with clear error messages
+  - Backwards compatible: defaults to ICMP mode if not configured
+
+### Changed
+- Renamed `parallel_probe()` to dispatcher function that routes to mode-specific probes
+- ICMP probe logic moved to `probe_icmp()` (unchanged behavior)
+- `PING_TIMEOUT` now applies to all modes (ICMP, TCP connection, HTTP request)
+
 ### Planned for Future Releases
 - Optional .deb packaging (Phase 5.3)
-- HTTP/TCP layer 7 health checks (Phase 6)
 - Per-interface routing table awareness (Phase 6)
 - Prometheus metrics exporter (Phase 6)
 - Web dashboard for multi-host monitoring (Phase 6)
