@@ -429,7 +429,7 @@ probe_icmp() {
       fi
     done <<<"$output"
 
-    # If fping reported zero successes, log why and fall back
+    # If fping reported zero successes, log why and fall back to ping to avoid false negatives.
     if (( fping_ok == 0 )); then
       log "fping returned zero replies (USE_FPING=${USE_FPING:-auto}); falling back to ping. fping output: ${output//$'\n'/ | }"
       ok=0
