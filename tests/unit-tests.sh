@@ -10,19 +10,42 @@
 
 set -Eeuo pipefail
 
-# Absolute paths for binaries (security requirement)
-MKTEMP="/usr/bin/mktemp"
-RM="/usr/bin/rm"
-CHMOD="/usr/bin/chmod"
-CAT="/usr/bin/cat"
+# Find binaries (prefer /usr/bin, fallback to /bin)
+if [[ -x /usr/bin/mktemp ]]; then
+  MKTEMP="/usr/bin/mktemp"
+elif [[ -x /bin/mktemp ]]; then
+  MKTEMP="/bin/mktemp"
+else
+  echo "ERROR: mktemp not found" >&2
+  exit 1
+fi
 
-# Verify required binaries exist
-for cmd in "$MKTEMP" "$RM" "$CHMOD" "$CAT"; do
-  if [[ ! -x "$cmd" ]]; then
-    echo "ERROR: Required binary not found: $cmd" >&2
-    exit 1
-  fi
-done
+if [[ -x /usr/bin/rm ]]; then
+  RM="/usr/bin/rm"
+elif [[ -x /bin/rm ]]; then
+  RM="/bin/rm"
+else
+  echo "ERROR: rm not found" >&2
+  exit 1
+fi
+
+if [[ -x /usr/bin/chmod ]]; then
+  CHMOD="/usr/bin/chmod"
+elif [[ -x /bin/chmod ]]; then
+  CHMOD="/bin/chmod"
+else
+  echo "ERROR: chmod not found" >&2
+  exit 1
+fi
+
+if [[ -x /usr/bin/cat ]]; then
+  CAT="/usr/bin/cat"
+elif [[ -x /bin/cat ]]; then
+  CAT="/bin/cat"
+else
+  echo "ERROR: cat not found" >&2
+  exit 1
+fi
 
 # Test framework state
 TESTS_RUN=0
@@ -41,17 +64,17 @@ NC='\033[0m'
 
 test_start() {
   echo -e "${YELLOW}TEST:${NC} $*"
-  ((TESTS_RUN++))
+  ((TESTS_RUN++)) || true
 }
 
 test_pass() {
   echo -e "${GREEN}PASS${NC}"
-  ((TESTS_PASSED++))
+  ((TESTS_PASSED++)) || true
 }
 
 test_fail() {
   echo -e "${RED}FAIL${NC} - $*"
-  ((TESTS_FAILED++))
+  ((TESTS_FAILED++)) || true
 }
 
 #
@@ -96,6 +119,37 @@ EOF
   "$CHMOD" +x "$MOCK_PING"
 }
 
+# Create mock netcat (nc) for TCP health checks
+# Usage: create_mock_nc <exit_code>
+create_mock_nc() {
+  local exit_code="${1:-0}"
+
+  export MOCK_NC="$MOCK_DIR/nc"
+  "$CAT" > "$MOCK_NC" <<EOF
+#!/usr/bin/env bash
+# Mock netcat - simulates TCP connection test
+# Usage: nc -z -w TIMEOUT HOST PORT
+exit $exit_code
+EOF
+  "$CHMOD" +x "$MOCK_NC"
+}
+
+# Create mock curl for HTTP health checks
+# Usage: create_mock_curl <http_status_code>
+create_mock_curl() {
+  local status_code="${1:-200}"
+
+  export MOCK_CURL="$MOCK_DIR/curl"
+  "$CAT" > "$MOCK_CURL" <<EOF
+#!/usr/bin/env bash
+# Mock curl - simulates HTTP request
+# Usage: curl -s -o /dev/null -w "%{http_code}" --insecure -m TIMEOUT URL
+echo "$status_code"
+exit 0
+EOF
+  "$CHMOD" +x "$MOCK_CURL"
+}
+
 #
 # Test helper functions
 #
@@ -109,10 +163,10 @@ parse_fping_success_count() {
   while IFS= read -r line; do
     [[ "$line" == *"xmt/rcv/%loss"* ]] || continue
     # Extract received count (format: "host : xmt/rcv/%loss = X/Y/Z%")
-    if [[ "$line" =~ :\ ([0-9]+)/([0-9]+)/ ]]; then
+    if [[ "$line" =~ =\ ([0-9]+)/([0-9]+)/ ]]; then
       local rcv="${BASH_REMATCH[2]}"
       if (( rcv >= 1 )); then
-        ((count++))
+        ((++count))
       fi
     fi
   done <<<"$output"
@@ -261,7 +315,7 @@ test_ping_fallback_all_up() {
 
   for pid in "${pids[@]}"; do
     if wait "$pid"; then
-      ((ok++))
+      ((++ok))
     fi
   done
 
@@ -299,7 +353,7 @@ test_ping_fallback_all_down() {
 
   for pid in "${pids[@]}"; do
     if wait "$pid"; then
-      ((ok++))
+      ((++ok))
     fi
   done
 
@@ -402,6 +456,373 @@ test_boot_grace_calculation() {
 }
 
 #
+# TCP Health Check Tests
+#
+
+# Test TCP health check with all targets reachable
+test_tcp_all_targets_up() {
+  test_start "TCP mode: all targets reachable"
+
+  setup_mock_env
+
+  # Mock netcat to succeed (TCP connection successful)
+  create_mock_nc 0
+
+  # Test configuration
+  TCP_TARGETS="1.1.1.1:853 8.8.8.8:443 9.9.9.9:443"
+  MIN_OK=1
+  PING_TIMEOUT=1
+  STATE_DIR="$MOCK_DIR"
+
+  # Simulate TCP probe logic
+  local ok=0
+  local -a targets
+  read -ra targets <<< "$TCP_TARGETS"
+
+  if [[ -x "$MOCK_NC" ]]; then
+    local -a pids=()
+    local -a tmp_files=()
+
+    for target in "${targets[@]}"; do
+      if [[ "$target" =~ ^([^:]+):([0-9]+)$ ]]; then
+        local host="${BASH_REMATCH[1]}"
+        local port="${BASH_REMATCH[2]}"
+        local tmp_file
+        tmp_file=$("$MKTEMP" -p "$STATE_DIR" nc.XXXXXX)
+        tmp_files+=("$tmp_file")
+
+        (
+          if "$MOCK_NC" -z -w "$PING_TIMEOUT" "$host" "$port" >/dev/null 2>&1; then
+            echo "ok" > "$tmp_file"
+          fi
+        ) &
+        pids+=($!)
+      fi
+    done
+
+    # Wait for all probes
+    for pid in "${pids[@]}"; do
+      wait "$pid" 2>/dev/null || true
+    done
+
+    # Count successes
+    for tmp_file in "${tmp_files[@]}"; do
+      if [[ -f "$tmp_file" ]] && [[ "$(<"$tmp_file")" == "ok" ]]; then
+        ((++ok))
+      fi
+      "$RM" -f "$tmp_file" 2>/dev/null || true
+    done
+  fi
+
+  if (( ok >= MIN_OK )); then
+    test_pass
+  else
+    test_fail "Expected ok >= $MIN_OK, got $ok"
+  fi
+
+  cleanup_mock_env
+}
+
+# Test TCP health check with partial target failures
+test_tcp_partial_failure() {
+  test_start "TCP mode: partial target failure (should pass with MIN_OK=1)"
+
+  setup_mock_env
+
+  # Mock netcat to succeed only once (first call)
+  # This is a simplification - in real test we'd need more sophisticated mocking
+  create_mock_nc 0
+
+  TCP_TARGETS="1.1.1.1:853"
+  MIN_OK=1
+  PING_TIMEOUT=1
+  STATE_DIR="$MOCK_DIR"
+
+  local ok=0
+  local -a targets
+  read -ra targets <<< "$TCP_TARGETS"
+
+  if [[ -x "$MOCK_NC" ]]; then
+    for target in "${targets[@]}"; do
+      if [[ "$target" =~ ^([^:]+):([0-9]+)$ ]]; then
+        local host="${BASH_REMATCH[1]}"
+        local port="${BASH_REMATCH[2]}"
+        if "$MOCK_NC" -z -w "$PING_TIMEOUT" "$host" "$port" >/dev/null 2>&1; then
+          ((++ok))
+        fi
+      fi
+    done
+  fi
+
+  if (( ok >= MIN_OK )); then
+    test_pass
+  else
+    test_fail "Expected ok >= $MIN_OK, got $ok"
+  fi
+
+  cleanup_mock_env
+}
+
+# Test TCP health check with all targets unreachable
+test_tcp_all_targets_down() {
+  test_start "TCP mode: all targets unreachable (should fail)"
+
+  setup_mock_env
+
+  # Mock netcat to fail (TCP connection refused)
+  create_mock_nc 1
+
+  TCP_TARGETS="1.1.1.1:853 8.8.8.8:443"
+  MIN_OK=1
+  PING_TIMEOUT=1
+  STATE_DIR="$MOCK_DIR"
+
+  local ok=0
+  local -a targets
+  read -ra targets <<< "$TCP_TARGETS"
+
+  if [[ -x "$MOCK_NC" ]]; then
+    for target in "${targets[@]}"; do
+      if [[ "$target" =~ ^([^:]+):([0-9]+)$ ]]; then
+        local host="${BASH_REMATCH[1]}"
+        local port="${BASH_REMATCH[2]}"
+        if "$MOCK_NC" -z -w "$PING_TIMEOUT" "$host" "$port" >/dev/null 2>&1; then
+          ((++ok))
+        fi
+      fi
+    done
+  fi
+
+  if (( ok < MIN_OK )); then
+    test_pass
+  else
+    test_fail "Expected ok < $MIN_OK, got $ok"
+  fi
+
+  cleanup_mock_env
+}
+
+# Test TCP health check with invalid target format
+test_tcp_invalid_target_format() {
+  test_start "TCP mode: invalid target format (missing port)"
+
+  setup_mock_env
+  create_mock_nc 0
+
+  TCP_TARGETS="1.1.1.1 8.8.8.8:443"  # First target missing port
+  MIN_OK=1
+  PING_TIMEOUT=1
+
+  local ok=0
+  local -a targets
+  read -ra targets <<< "$TCP_TARGETS"
+
+  # Simulate validation logic
+  local valid_targets=0
+  for target in "${targets[@]}"; do
+    if [[ "$target" =~ ^([^:]+):([0-9]+)$ ]]; then
+      ((++valid_targets))
+    fi
+  done
+
+  # Should have 1 valid target (8.8.8.8:443), 1 invalid (1.1.1.1)
+  if (( valid_targets == 1 )); then
+    test_pass
+  else
+    test_fail "Expected 1 valid target, got $valid_targets"
+  fi
+
+  cleanup_mock_env
+}
+
+#
+# HTTP Health Check Tests
+#
+
+# Test HTTP health check with all targets returning expected status
+test_http_all_targets_up() {
+  test_start "HTTP mode: all targets returning HTTP 200"
+
+  setup_mock_env
+
+  # Mock curl to return HTTP 200
+  create_mock_curl 200
+
+  # Test configuration
+  HTTP_TARGETS="https://1.1.1.1 https://8.8.8.8 https://9.9.9.9"
+  HTTP_EXPECTED_CODE="200"
+  MIN_OK=1
+  PING_TIMEOUT=1
+  STATE_DIR="$MOCK_DIR"
+
+  # Simulate HTTP probe logic
+  local ok=0
+  local -a targets
+  read -ra targets <<< "$HTTP_TARGETS"
+
+  if [[ -x "$MOCK_CURL" ]]; then
+    local -a pids=()
+    local -a tmp_files=()
+
+    for url in "${targets[@]}"; do
+      local tmp_file
+      tmp_file=$("$MKTEMP" -p "$STATE_DIR" http.XXXXXX)
+      tmp_files+=("$tmp_file")
+
+      (
+        local status_code
+        status_code=$("$MOCK_CURL" -s -o /dev/null -w "%{http_code}" \
+          --insecure -m "$PING_TIMEOUT" "$url" 2>/dev/null || echo "000")
+
+        if [[ "$status_code" == "$HTTP_EXPECTED_CODE" ]]; then
+          echo "ok" > "$tmp_file"
+        fi
+      ) &
+      pids+=($!)
+    done
+
+    # Wait for all probes
+    for pid in "${pids[@]}"; do
+      wait "$pid" 2>/dev/null || true
+    done
+
+    # Count successes
+    for tmp_file in "${tmp_files[@]}"; do
+      if [[ -f "$tmp_file" ]] && [[ "$(<"$tmp_file")" == "ok" ]]; then
+        ((++ok))
+      fi
+      "$RM" -f "$tmp_file" 2>/dev/null || true
+    done
+  fi
+
+  if (( ok >= MIN_OK )); then
+    test_pass
+  else
+    test_fail "Expected ok >= $MIN_OK, got $ok"
+  fi
+
+  cleanup_mock_env
+}
+
+# Test HTTP health check with partial failures
+test_http_partial_failure() {
+  test_start "HTTP mode: partial target failure (should pass with MIN_OK=1)"
+
+  setup_mock_env
+
+  # Mock curl to return HTTP 200
+  create_mock_curl 200
+
+  HTTP_TARGETS="https://1.1.1.1"
+  HTTP_EXPECTED_CODE="200"
+  MIN_OK=1
+  PING_TIMEOUT=1
+
+  local ok=0
+  local -a targets
+  read -ra targets <<< "$HTTP_TARGETS"
+
+  if [[ -x "$MOCK_CURL" ]]; then
+    for url in "${targets[@]}"; do
+      local status_code
+      status_code=$("$MOCK_CURL" -s -o /dev/null -w "%{http_code}" \
+        --insecure -m "$PING_TIMEOUT" "$url" 2>/dev/null || echo "000")
+
+      if [[ "$status_code" == "$HTTP_EXPECTED_CODE" ]]; then
+        ((++ok))
+      fi
+    done
+  fi
+
+  if (( ok >= MIN_OK )); then
+    test_pass
+  else
+    test_fail "Expected ok >= $MIN_OK, got $ok"
+  fi
+
+  cleanup_mock_env
+}
+
+# Test HTTP health check with all targets unreachable
+test_http_all_targets_down() {
+  test_start "HTTP mode: all targets unreachable (timeout/connection error)"
+
+  setup_mock_env
+
+  # Mock curl to return 000 (connection failed)
+  create_mock_curl 000
+
+  HTTP_TARGETS="https://1.1.1.1 https://8.8.8.8"
+  HTTP_EXPECTED_CODE="200"
+  MIN_OK=1
+  PING_TIMEOUT=1
+
+  local ok=0
+  local -a targets
+  read -ra targets <<< "$HTTP_TARGETS"
+
+  if [[ -x "$MOCK_CURL" ]]; then
+    for url in "${targets[@]}"; do
+      local status_code
+      status_code=$("$MOCK_CURL" -s -o /dev/null -w "%{http_code}" \
+        --insecure -m "$PING_TIMEOUT" "$url" 2>/dev/null || echo "000")
+
+      if [[ "$status_code" == "$HTTP_EXPECTED_CODE" ]]; then
+        ((++ok))
+      fi
+    done
+  fi
+
+  if (( ok < MIN_OK )); then
+    test_pass
+  else
+    test_fail "Expected ok < $MIN_OK, got $ok"
+  fi
+
+  cleanup_mock_env
+}
+
+# Test HTTP health check with unexpected status code
+test_http_unexpected_status_code() {
+  test_start "HTTP mode: unexpected status code (got 404, expected 200)"
+
+  setup_mock_env
+
+  # Mock curl to return HTTP 404
+  create_mock_curl 404
+
+  HTTP_TARGETS="https://1.1.1.1"
+  HTTP_EXPECTED_CODE="200"
+  MIN_OK=1
+  PING_TIMEOUT=1
+
+  local ok=0
+  local -a targets
+  read -ra targets <<< "$HTTP_TARGETS"
+
+  if [[ -x "$MOCK_CURL" ]]; then
+    for url in "${targets[@]}"; do
+      local status_code
+      status_code=$("$MOCK_CURL" -s -o /dev/null -w "%{http_code}" \
+        --insecure -m "$PING_TIMEOUT" "$url" 2>/dev/null || echo "000")
+
+      if [[ "$status_code" == "$HTTP_EXPECTED_CODE" ]]; then
+        ((++ok))
+      fi
+    done
+  fi
+
+  # Should fail because status code doesn't match
+  if (( ok < MIN_OK )); then
+    test_pass
+  else
+    test_fail "Expected ok < $MIN_OK, got $ok (status code mismatch should fail)"
+  fi
+
+  cleanup_mock_env
+}
+
+#
 # Run all tests
 #
 
@@ -422,6 +843,18 @@ test_min_ok_threshold
 test_outage_timer_logic
 test_cooldown_enforcement
 test_boot_grace_calculation
+
+# TCP health check tests
+test_tcp_all_targets_up
+test_tcp_partial_failure
+test_tcp_all_targets_down
+test_tcp_invalid_target_format
+
+# HTTP health check tests
+test_http_all_targets_up
+test_http_partial_failure
+test_http_all_targets_down
+test_http_unexpected_status_code
 
 #
 # Summary

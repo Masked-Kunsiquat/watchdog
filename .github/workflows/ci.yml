@@ -1,0 +1,460 @@
+name: CI
+
+on:
+  push:
+    branches: [ master, feat/*, release/* ]
+  pull_request:
+    branches: [ master ]
+
+jobs:
+  shellcheck:
+    name: Shellcheck Linting
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - &setup_sudo
+        name: Setup SUDO helper
+        run: |
+          SUDO=""
+          if [ "$(id -u)" -ne 0 ] && command -v sudo >/dev/null 2>&1; then
+            SUDO="sudo"
+          fi
+          echo "SUDO=$SUDO" >> "$GITHUB_ENV"
+
+      - name: Install shellcheck
+        run: |
+          if [ -z "$SUDO" ] && [ "$(id -u)" -ne 0 ]; then echo "ERROR: need root privileges or sudo"; exit 1; fi
+          ${SUDO:+$SUDO }apt-get update
+          ${SUDO:+$SUDO }apt-get install -y shellcheck
+
+      - name: Run shellcheck on all scripts
+        run: |
+          # Run shellcheck with exclusions for known false positives
+          find . -type f -name "*.sh" -exec shellcheck -x -e SC1091 -e SC2317 {} +
+
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - *setup_sudo
+
+      - name: Run unit tests
+        run: |
+          cd tests
+          bash unit-tests.sh
+
+  smoke-tests:
+    name: Smoke Tests (ICMP mode)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - *setup_sudo
+
+      - name: Run smoke tests (verbose for debugging)
+        run: |
+          cd tests
+          bash smoke-test.sh --verbose
+
+  tcp-health-check:
+    name: TCP Health Check Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - *setup_sudo
+
+      - name: Install netcat
+        run: |
+          SUDO=""
+          if [ "$(id -u)" -ne 0 ]; then
+            if command -v sudo >/dev/null 2>&1; then SUDO="sudo"; else echo "ERROR: need root privileges or sudo"; exit 1; fi
+          fi
+          $SUDO apt-get update
+          $SUDO apt-get install -y netcat-openbsd
+
+      - name: Test TCP mode with real netcat
+        run: |
+          SUDO=""
+          if [ "$(id -u)" -ne 0 ]; then
+            if command -v sudo >/dev/null 2>&1; then SUDO="sudo"; else echo "ERROR: need root privileges or sudo"; exit 1; fi
+          fi
+
+          # Install the agent
+          $SUDO ./scripts/install.sh
+
+          # Configure for TCP mode with Google/Cloudflare HTTPS ports (should be reachable)
+          $SUDO tee /etc/default/netwatch-agent > /dev/null <<'EOF'
+          HEALTH_CHECK_MODE="tcp"
+          TCP_TARGETS="8.8.8.8:443 1.1.1.1:443"
+          MIN_OK=1
+          PING_TIMEOUT=2
+          CHECK_INTERVAL=5
+          DOWN_WINDOW_SECONDS=30
+          BOOT_GRACE=0
+          DRY_RUN=1
+          DISABLE_FILE="/etc/netwatch-agent.disable"
+          EOF
+
+          # Start service and verify restart succeeded
+          START_TS=$(date -u +"%Y-%m-%d %H:%M:%S")
+          if ! $SUDO systemctl restart netwatch-agent; then
+            echo "ERROR: Failed to restart netwatch-agent service"
+            echo "Recent journal output:"
+            $SUDO journalctl -u netwatch-agent --no-pager -n 50
+            exit 1
+          fi
+
+          # Wait for boot grace
+          sleep 10
+
+          # Check logs for TCP mode activation
+          $SUDO journalctl -u netwatch-agent --no-pager --since "$START_TS" | grep -i "Health check mode: TCP"
+
+          # Verify service is running
+          $SUDO systemctl is-active netwatch-agent
+
+          # Check that probes are succeeding (no WAN down messages)
+          if $SUDO journalctl -u netwatch-agent --no-pager --since "$START_TS" | grep -i "WAN appears down"; then
+            echo "ERROR: TCP health checks failing on reachable targets"
+            $SUDO journalctl -u netwatch-agent --no-pager --since "$START_TS"
+            exit 1
+          fi
+
+          echo "TCP health checks working correctly"
+
+  http-health-check:
+    name: HTTP Health Check Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - *setup_sudo
+
+      - name: Install curl
+        run: |
+          SUDO=""
+          if [ "$(id -u)" -ne 0 ]; then
+            if command -v sudo >/dev/null 2>&1; then SUDO="sudo"; else echo "ERROR: need root privileges or sudo"; exit 1; fi
+          fi
+          $SUDO apt-get update
+          $SUDO apt-get install -y curl
+
+      - name: Test HTTP mode with real curl
+        run: |
+          SUDO=""
+          if [ "$(id -u)" -ne 0 ]; then
+            if command -v sudo >/dev/null 2>&1; then SUDO="sudo"; else echo "ERROR: need root privileges or sudo"; exit 1; fi
+          fi
+
+          # Install the agent
+          $SUDO ./scripts/install.sh
+
+          # Configure for HTTP mode with valid domain names (should return 200)
+          $SUDO tee /etc/default/netwatch-agent > /dev/null <<'EOF'
+          HEALTH_CHECK_MODE="http"
+          HTTP_TARGETS="https://www.google.com https://www.cloudflare.com https://one.one.one.one"
+          HTTP_EXPECTED_CODE="200"
+          MIN_OK=2
+          PING_TIMEOUT=5
+          CHECK_INTERVAL=5
+          DOWN_WINDOW_SECONDS=30
+          BOOT_GRACE=5
+          DRY_RUN=1
+          DISABLE_FILE="/etc/netwatch-agent.disable"
+          EOF
+
+          # Start service and verify restart succeeded
+          if ! $SUDO systemctl restart netwatch-agent; then
+            echo "ERROR: Failed to restart netwatch-agent service"
+            echo "Recent journal output:"
+            $SUDO journalctl -u netwatch-agent --no-pager -n 50
+            exit 1
+          fi
+
+          # Wait for boot grace
+          sleep 10
+
+          # Check logs for HTTP mode activation
+          $SUDO journalctl -u netwatch-agent --no-pager | grep -i "http"
+
+          # Verify service is running
+          $SUDO systemctl is-active netwatch-agent
+
+          # Check that probes are succeeding (no WAN down messages)
+          if $SUDO journalctl -u netwatch-agent --no-pager | grep -i "WAN appears down"; then
+            echo "ERROR: HTTP health checks failing on reachable targets"
+            $SUDO journalctl -u netwatch-agent --no-pager
+            exit 1
+          fi
+
+          echo "HTTP health checks working correctly"
+
+  dependency-validation:
+    name: Dependency Validation Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - *setup_sudo
+
+      - name: Test TCP mode without netcat (should fail gracefully)
+        run: |
+          SUDO=""
+          if [ "$(id -u)" -ne 0 ]; then
+            if command -v sudo >/dev/null 2>&1; then SUDO="sudo"; else echo "ERROR: need root privileges or sudo"; exit 1; fi
+          fi
+
+          $SUDO ./scripts/install.sh
+
+          # Remove netcat if present
+          $SUDO apt-get remove -y netcat-openbsd netcat-traditional || true
+
+          # Configure for TCP mode
+          $SUDO tee /etc/default/netwatch-agent > /dev/null <<'EOF'
+          HEALTH_CHECK_MODE="tcp"
+          TCP_TARGETS="8.8.8.8:443"
+          MIN_OK=1
+          DRY_RUN=1
+          EOF
+
+          # Restart to reload new config (idempotent and matches HTTP test) - should fail with clear error
+          if $SUDO systemctl restart netwatch-agent 2>&1; then
+            sleep 2
+            # Check for error message in logs
+            if $SUDO journalctl -u netwatch-agent --no-pager | grep -i "netcat.*not found"; then
+              echo "✓ TCP mode correctly detected missing netcat dependency"
+            else
+              echo "ERROR: TCP mode did not report missing netcat"
+              $SUDO journalctl -u netwatch-agent --no-pager
+              exit 1
+            fi
+          fi
+
+      - name: Test HTTP mode without curl (should fail gracefully)
+        run: |
+          SUDO=""
+          if [ "$(id -u)" -ne 0 ]; then
+            if command -v sudo >/dev/null 2>&1; then SUDO="sudo"; else echo "ERROR: need root privileges or sudo"; exit 1; fi
+          fi
+
+          # Remove curl if present
+          $SUDO apt-get remove -y curl || true
+
+          # Configure for HTTP mode
+          $SUDO tee /etc/default/netwatch-agent > /dev/null <<'EOF'
+          HEALTH_CHECK_MODE="http"
+          HTTP_TARGETS="https://www.google.com"
+          HTTP_EXPECTED_CODE="200"
+          MIN_OK=1
+          DRY_RUN=1
+          EOF
+
+          # Restart to reload new config (consistent with TCP test) - should fail with clear error
+          if $SUDO systemctl restart netwatch-agent 2>&1; then
+            sleep 2
+            # Check for error message in logs
+            if $SUDO journalctl -u netwatch-agent --no-pager | grep -i "curl.*not found"; then
+              echo "✓ HTTP mode correctly detected missing curl dependency"
+            else
+              echo "ERROR: HTTP mode did not report missing curl"
+              $SUDO journalctl -u netwatch-agent --no-pager
+              exit 1
+            fi
+          fi
+
+  integration-test:
+    name: Integration Test (ICMP + fping)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - *setup_sudo
+
+      - name: Install fping
+        run: |
+          SUDO=""
+          if [ "$(id -u)" -ne 0 ]; then
+            if command -v sudo >/dev/null 2>&1; then SUDO="sudo"; else echo "ERROR: need root privileges or sudo"; exit 1; fi
+          fi
+          $SUDO apt-get update
+          $SUDO apt-get install -y fping
+
+      - name: Test with fping (all targets reachable)
+        run: |
+          SUDO=""
+          if [ "$(id -u)" -ne 0 ]; then
+            if command -v sudo >/dev/null 2>&1; then SUDO="sudo"; else echo "ERROR: need root privileges or sudo"; exit 1; fi
+          fi
+
+          $SUDO ./scripts/install.sh
+
+          # Configure with short timings for fast test
+          $SUDO tee /etc/default/netwatch-agent > /dev/null <<'EOF'
+          HEALTH_CHECK_MODE="icmp"
+          TARGETS="8.8.8.8 1.1.1.1 9.9.9.9"
+          MIN_OK=2
+          PING_COUNT=3
+          PING_TIMEOUT=3
+          CHECK_INTERVAL=5
+          DOWN_WINDOW_SECONDS=10
+          BOOT_GRACE=10
+          USE_FPING="yes"
+          DRY_RUN=1
+          DISABLE_FILE="/etc/netwatch-agent.disable"
+          EOF
+
+          # Start service and track log window
+          START_TS=$(date -u +"%Y-%m-%d %H:%M:%S")
+          $SUDO systemctl restart netwatch-agent
+
+          # Wait for boot grace + a few checks
+          sleep 25
+
+          # Verify fping is being used
+          if ! $SUDO journalctl -u netwatch-agent --no-pager --since "$START_TS" | grep -i "using fping"; then
+            echo "ERROR: fping not being used despite USE_FPING=yes"
+            $SUDO journalctl -u netwatch-agent --no-pager --since "$START_TS"
+            exit 1
+          fi
+
+          # Check that probes are succeeding
+          if $SUDO journalctl -u netwatch-agent --no-pager --since "$START_TS" | grep -i "WAN appears down"; then
+            echo "ERROR: WAN down detected on reachable targets"
+            $SUDO journalctl -u netwatch-agent --no-pager --since "$START_TS"
+            exit 1
+          fi
+
+          echo "✓ fping integration test passed"
+
+      - name: Test with unreachable targets (should detect outage)
+        run: |
+          SUDO=""
+          if [ "$(id -u)" -ne 0 ]; then
+            if command -v sudo >/dev/null 2>&1; then SUDO="sudo"; else echo "ERROR: need root privileges or sudo"; exit 1; fi
+          fi
+
+          set -e  # Exit on any command failure
+
+          # Block ICMP to simulate outage
+          echo "Inserting iptables rules to block ICMP..."
+          $SUDO iptables -I OUTPUT -p icmp -d 8.8.8.8 -j DROP
+          $SUDO iptables -I OUTPUT -p icmp -d 1.1.1.1 -j DROP
+          $SUDO iptables -I OUTPUT -p icmp -d 9.9.9.9 -j DROP
+          echo "iptables rules inserted successfully"
+
+          # Restart service to pick up state with blocked ICMP (no boot grace)
+          START_TS=$(date -u +"%Y-%m-%d %H:%M:%S")
+          $SUDO tee /etc/default/netwatch-agent > /dev/null <<'EOF'
+          HEALTH_CHECK_MODE="icmp"
+          TARGETS="8.8.8.8 1.1.1.1 9.9.9.9"
+          MIN_OK=2
+          PING_COUNT=3
+          PING_TIMEOUT=3
+          CHECK_INTERVAL=5
+          DOWN_WINDOW_SECONDS=10
+          BOOT_GRACE=0
+          USE_FPING="yes"
+          DRY_RUN=1
+          DISABLE_FILE="/etc/netwatch-agent.disable"
+          EOF
+
+          $SUDO systemctl restart netwatch-agent
+
+          # Wait for checks to detect outage
+          sleep 20
+
+          # Verify WAN down was detected
+          if ! $SUDO journalctl -u netwatch-agent --no-pager --since "$START_TS" | grep -Ei "WAN appears down|would reboot now"; then
+            echo "ERROR: Failed to detect simulated outage"
+            $SUDO journalctl -u netwatch-agent --no-pager --since "$START_TS"
+            exit 1
+          fi
+
+          echo "✓ Outage detection test passed"
+
+          # Cleanup
+          $SUDO iptables -D OUTPUT -p icmp -d 8.8.8.8 -j DROP || true
+          $SUDO iptables -D OUTPUT -p icmp -d 1.1.1.1 -j DROP || true
+          $SUDO iptables -D OUTPUT -p icmp -d 9.9.9.9 -j DROP || true
+
+  install-uninstall:
+    name: Install/Uninstall Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - *setup_sudo
+
+      - name: Test fresh install
+        run: |
+          SUDO=""
+          if [ "$(id -u)" -ne 0 ]; then
+            if command -v sudo >/dev/null 2>&1; then SUDO="sudo"; else echo "ERROR: need root privileges or sudo"; exit 1; fi
+          fi
+
+          $SUDO ./scripts/install.sh
+
+          # Verify files exist
+          $SUDO test -f /usr/local/sbin/netwatch-agent.sh
+          $SUDO test -f /etc/default/netwatch-agent
+          $SUDO test -f /etc/systemd/system/netwatch-agent.service
+
+          # Verify service is enabled and running
+          $SUDO systemctl is-enabled netwatch-agent
+          $SUDO systemctl is-active netwatch-agent
+
+          echo "✓ Fresh install successful"
+
+      - name: Test upgrade (reinstall)
+        run: |
+          SUDO=""
+          if [ "$(id -u)" -ne 0 ]; then
+            if command -v sudo >/dev/null 2>&1; then SUDO="sudo"; else echo "ERROR: need root privileges or sudo"; exit 1; fi
+          fi
+
+          # Modify config to ensure preservation
+          echo "# Test comment" | $SUDO tee -a /etc/default/netwatch-agent
+
+          # Reinstall
+          $SUDO ./scripts/install.sh
+
+          # Verify config was preserved
+          if ! $SUDO grep "Test comment" /etc/default/netwatch-agent; then
+            echo "ERROR: Config was not preserved during upgrade"
+            exit 1
+          fi
+
+          echo "✓ Upgrade test successful"
+
+      - name: Test uninstall
+        run: |
+          SUDO=""
+          if [ "$(id -u)" -ne 0 ]; then
+            if command -v sudo >/dev/null 2>&1; then SUDO="sudo"; else echo "ERROR: need root privileges or sudo"; exit 1; fi
+          fi
+
+          $SUDO ./scripts/uninstall.sh --keep-config
+
+          # Verify service is stopped and disabled
+          if $SUDO systemctl is-active netwatch-agent 2>/dev/null; then
+            echo "ERROR: Service still running after uninstall"
+            exit 1
+          fi
+
+          # Verify files removed
+          if $SUDO test -f /usr/local/sbin/netwatch-agent.sh; then
+            echo "ERROR: Agent script not removed"
+            exit 1
+          fi
+
+          # Verify config was preserved (--keep-config flag)
+          if ! $SUDO test -f /etc/default/netwatch-agent; then
+            echo "ERROR: Config was removed despite --keep-config"
+            exit 1
+          fi
+
+          echo "✓ Uninstall test successful"

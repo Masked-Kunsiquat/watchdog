@@ -1,5 +1,7 @@
 # Netwatch - Proxmox WAN Watchdog
 
+[![CI](https://github.com/Masked-Kunsiquat/watchdog/actions/workflows/ci.yml/badge.svg)](https://github.com/Masked-Kunsiquat/watchdog/actions/workflows/ci.yml)
+
 **A robust WAN watchdog for single-node Proxmox VE hosts**
 
 Netwatch automatically reboots your Proxmox host after a configurable period of continuous WAN loss, providing reliable self-healing for network outages.
@@ -40,15 +42,49 @@ sudo nano /etc/default/netwatch-agent
 sudo systemctl restart netwatch-agent
 ```
 
-### Network Probing
+### Health Check Modes
+
+Netwatch supports three health check methods with different network layer validation:
+
+| Mode | Layer | Use Case | Dependencies |
+|------|-------|----------|--------------|
+| **ICMP** (default) | Layer 3 | Universal connectivity, works everywhere | `ping` (always available) |
+| **TCP** | Layer 4 | Verify port reachability, bypass ICMP filters | `netcat` (`apt install netcat-openbsd`) |
+| **HTTP/HTTPS** | Layer 7 | Full application stack validation | `curl` (`apt install curl`) |
+
+**Configuration**:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `TARGETS` | `1.1.1.1 8.8.8.8 9.9.9.9` | Space-separated IP addresses to probe. Use IPs (not DNS names) from multiple providers for reliability. |
-| `MIN_OK` | `1` | Minimum number of targets that must respond to consider WAN "up". |
-| `PING_COUNT` | `1` | ICMP echo requests per target per loop. |
-| `PING_TIMEOUT` | `1` | Timeout in seconds per target probe. |
-| `USE_FPING` | `auto` | Use fping if available (`auto`), always use (`yes`), or never use (`no`). |
+| `HEALTH_CHECK_MODE` | `icmp` | Health check method: `icmp`, `tcp`, or `http`. |
+| `TARGETS` | `1.1.1.1 8.8.8.8 9.9.9.9` | **ICMP mode**: Space-separated IP addresses to ping. |
+| `TCP_TARGETS` | `1.1.1.1:853 8.8.8.8:443 9.9.9.9:443` | **TCP mode**: Space-separated `host:port` pairs to connect to. |
+| `HTTP_TARGETS` | `https://1.1.1.1 https://8.8.8.8 https://9.9.9.9` | **HTTP mode**: Space-separated URLs to request. |
+| `HTTP_EXPECTED_CODE` | `200` | **HTTP mode**: Expected HTTP status code (e.g., `200`, `204`, `301`). |
+
+**Example: TCP health checks** (for environments blocking ICMP):
+```bash
+HEALTH_CHECK_MODE="tcp"
+TCP_TARGETS="1.1.1.1:853 8.8.8.8:443 9.9.9.9:443"  # DNS-over-TLS and HTTPS ports
+MIN_OK=2
+```
+
+**Example: HTTP health checks** (verify full application stack):
+```bash
+HEALTH_CHECK_MODE="http"
+HTTP_TARGETS="https://1.1.1.1 https://www.google.com https://www.cloudflare.com"
+HTTP_EXPECTED_CODE="200"
+MIN_OK=2
+```
+
+### Network Probing (Common Settings)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MIN_OK` | `1` | Minimum number of targets that must respond to consider WAN "up" (applies to all health check modes). |
+| `PING_TIMEOUT` | `1` | Timeout in seconds per target probe (applies to all modes: ICMP ping, TCP connection, or HTTP request). |
+| `PING_COUNT` | `1` | **ICMP mode only**: Number of ICMP echo requests per target per loop. |
+| `USE_FPING` | `auto` | **ICMP mode only**: Use fping if available (`auto`), require fping (`yes`), or force standard ping (`no`). |
 
 ### Timing & Safety
 

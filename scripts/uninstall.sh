@@ -5,7 +5,7 @@
 # Safely removes netwatch-agent from the system, stopping the service
 # and cleaning up all installed files. Optionally preserves configuration.
 #
-# Usage: sudo ./uninstall.sh [--keep-config]
+# Usage: ./uninstall.sh [--keep-config]   (run as root or with sudo)
 #
 
 set -Eeuo pipefail
@@ -66,26 +66,31 @@ log_error() {
 log_info "Netwatch WAN Watchdog Uninstaller"
 echo
 
-# Check if running as root
+# Helper to run commands with sudo when not root
+SUDO=""
 if [[ $EUID -ne 0 ]]; then
-  log_error "This script must be run as root (use sudo)"
-  exit 1
+  if command -v sudo >/dev/null 2>&1; then
+    SUDO="sudo"
+  else
+    log_error "This script must be run as root (sudo not available)"
+    exit 1
+  fi
 fi
 
 #
 # Stop and disable service
 #
 
-if /usr/bin/systemctl is-active --quiet netwatch-agent 2>/dev/null; then
+if $SUDO /usr/bin/systemctl is-active --quiet netwatch-agent 2>/dev/null; then
   log_info "Stopping netwatch-agent service"
-  /usr/bin/systemctl stop netwatch-agent
+  $SUDO /usr/bin/systemctl stop netwatch-agent
 else
   log_info "Service is not running"
 fi
 
-if /usr/bin/systemctl is-enabled --quiet netwatch-agent 2>/dev/null; then
+if $SUDO /usr/bin/systemctl is-enabled --quiet netwatch-agent 2>/dev/null; then
   log_info "Disabling netwatch-agent service"
-  /usr/bin/systemctl disable netwatch-agent
+  $SUDO /usr/bin/systemctl disable netwatch-agent
 else
   log_info "Service is not enabled"
 fi
@@ -96,13 +101,13 @@ fi
 
 if [[ -f "$SYSTEMD_UNIT" ]]; then
   log_info "Removing systemd unit: $SYSTEMD_UNIT"
-  rm -f "$SYSTEMD_UNIT"
+  $SUDO rm -f "$SYSTEMD_UNIT"
 else
   log_warn "Systemd unit not found: $SYSTEMD_UNIT"
 fi
 
 log_info "Reloading systemd daemon"
-/usr/bin/systemctl daemon-reload
+$SUDO /usr/bin/systemctl daemon-reload
 
 #
 # Remove agent script
@@ -110,14 +115,14 @@ log_info "Reloading systemd daemon"
 
 if [[ -f "$AGENT_SCRIPT" ]]; then
   log_info "Removing agent script: $AGENT_SCRIPT"
-  rm -f "$AGENT_SCRIPT"
+  $SUDO rm -f "$AGENT_SCRIPT"
 else
   log_warn "Agent script not found: $AGENT_SCRIPT"
 fi
 
 if [[ -f "$AGENT_BACKUP" ]]; then
   log_info "Removing backup: $AGENT_BACKUP"
-  rm -f "$AGENT_BACKUP"
+  $SUDO rm -f "$AGENT_BACKUP"
 fi
 
 #
@@ -128,12 +133,12 @@ if [[ "$KEEP_CONFIG" == true ]]; then
   if [[ -f "$CONFIG_FILE" ]]; then
     log_info "Preserving config: $CONFIG_FILE"
     log_info "Backed up to: ${CONFIG_FILE}.uninstall-backup"
-    cp "$CONFIG_FILE" "${CONFIG_FILE}.uninstall-backup"
+    $SUDO cp "$CONFIG_FILE" "${CONFIG_FILE}.uninstall-backup"
   fi
 else
   if [[ -f "$CONFIG_FILE" ]]; then
     log_info "Removing config: $CONFIG_FILE"
-    rm -f "$CONFIG_FILE"
+    $SUDO rm -f "$CONFIG_FILE"
   else
     log_warn "Config file not found: $CONFIG_FILE"
   fi
@@ -141,7 +146,7 @@ fi
 
 if [[ -f "$CONFIG_NEW" ]]; then
   log_info "Removing config template: $CONFIG_NEW"
-  rm -f "$CONFIG_NEW"
+  $SUDO rm -f "$CONFIG_NEW"
 fi
 
 #
@@ -150,7 +155,7 @@ fi
 
 if [[ -d "$STATE_DIR" ]]; then
   log_info "Cleaning state directory: $STATE_DIR"
-  rm -rf "$STATE_DIR"
+  $SUDO rm -rf "$STATE_DIR"
 fi
 
 #
