@@ -13,14 +13,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install shellcheck
+      - &setup_sudo
+        name: Setup SUDO helper
         run: |
           SUDO=""
-          if [ "$(id -u)" -ne 0 ]; then
-            if command -v sudo >/dev/null 2>&1; then SUDO="sudo"; else echo "ERROR: need root privileges or sudo"; exit 1; fi
+          if [ "$(id -u)" -ne 0 ] && command -v sudo >/dev/null 2>&1; then
+            SUDO="sudo"
           fi
-          $SUDO apt-get update
-          $SUDO apt-get install -y shellcheck
+          echo "SUDO=$SUDO" >> "$GITHUB_ENV"
+
+      - name: Install shellcheck
+        run: |
+          if [ -z "$SUDO" ] && [ "$(id -u)" -ne 0 ]; then echo "ERROR: need root privileges or sudo"; exit 1; fi
+          ${SUDO:+$SUDO }apt-get update
+          ${SUDO:+$SUDO }apt-get install -y shellcheck
 
       - name: Run shellcheck on all scripts
         run: |
@@ -33,6 +39,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - *setup_sudo
+
       - name: Run unit tests
         run: |
           cd tests
@@ -44,6 +52,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - *setup_sudo
+
       - name: Run smoke tests (verbose for debugging)
         run: |
           cd tests
@@ -54,6 +64,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - *setup_sudo
 
       - name: Install netcat
         run: |
@@ -119,6 +131,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - *setup_sudo
+
       - name: Install curl
         run: |
           SUDO=""
@@ -183,6 +197,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - *setup_sudo
 
       - name: Test TCP mode without netcat (should fail gracefully)
         run: |
@@ -254,6 +270,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - *setup_sudo
 
       - name: Install fping
         run: |
@@ -348,6 +366,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - *setup_sudo
 
       - name: Test fresh install
         run: |
