@@ -97,6 +97,30 @@ EOF
 }
 
 #
+# Test helper functions
+#
+
+# Parse fping output and count successful targets
+# Usage: count=$(parse_fping_success_count "$fping_output")
+parse_fping_success_count() {
+  local output="$1"
+  local count=0
+
+  while IFS= read -r line; do
+    [[ "$line" == *"xmt/rcv/%loss"* ]] || continue
+    # Extract received count (format: "host : xmt/rcv/%loss = X/Y/Z%")
+    if [[ "$line" =~ :\ ([0-9]+)/([0-9]+)/ ]]; then
+      local rcv="${BASH_REMATCH[2]}"
+      if (( rcv >= 1 )); then
+        ((count++))
+      fi
+    fi
+  done <<<"$output"
+
+  echo "$count"
+}
+
+#
 # Test cases
 #
 
@@ -126,16 +150,7 @@ test_fping_all_targets_up() {
     local timeout_ms=$((PING_TIMEOUT * 1000))
     local output
     output=$("$MOCK_FPING" -c "$PING_COUNT" -t "$timeout_ms" -q "${targets[@]}" 2>&1 || true)
-
-    while IFS= read -r line; do
-      [[ "$line" == *"xmt/rcv/%loss"* ]] || continue
-      if [[ "$line" =~ :\ ([0-9]+)/([0-9]+)/ ]]; then
-        local rcv="${BASH_REMATCH[2]}"
-        if (( rcv >= 1 )); then
-          ((ok++))
-        fi
-      fi
-    done <<<"$output"
+    ok=$(parse_fping_success_count "$output")
   fi
 
   if (( ok >= MIN_OK )); then
@@ -171,16 +186,7 @@ test_fping_partial_failure() {
     local timeout_ms=$((PING_TIMEOUT * 1000))
     local output
     output=$("$MOCK_FPING" -c "$PING_COUNT" -t "$timeout_ms" -q "${targets[@]}" 2>&1 || true)
-
-    while IFS= read -r line; do
-      [[ "$line" == *"xmt/rcv/%loss"* ]] || continue
-      if [[ "$line" =~ :\ ([0-9]+)/([0-9]+)/ ]]; then
-        local rcv="${BASH_REMATCH[2]}"
-        if (( rcv >= 1 )); then
-          ((ok++))
-        fi
-      fi
-    done <<<"$output"
+    ok=$(parse_fping_success_count "$output")
   fi
 
   if (( ok >= MIN_OK )); then
@@ -216,16 +222,7 @@ test_fping_all_targets_down() {
     local timeout_ms=$((PING_TIMEOUT * 1000))
     local output
     output=$("$MOCK_FPING" -c "$PING_COUNT" -t "$timeout_ms" -q "${targets[@]}" 2>&1 || true)
-
-    while IFS= read -r line; do
-      [[ "$line" == *"xmt/rcv/%loss"* ]] || continue
-      if [[ "$line" =~ :\ ([0-9]+)/([0-9]+)/ ]]; then
-        local rcv="${BASH_REMATCH[2]}"
-        if (( rcv >= 1 )); then
-          ((ok++))
-        fi
-      fi
-    done <<<"$output"
+    ok=$(parse_fping_success_count "$output")
   fi
 
   if (( ok < MIN_OK )); then
@@ -338,16 +335,7 @@ test_min_ok_threshold() {
     local timeout_ms=$((PING_TIMEOUT * 1000))
     local output
     output=$("$MOCK_FPING" -c "$PING_COUNT" -t "$timeout_ms" -q "${targets[@]}" 2>&1 || true)
-
-    while IFS= read -r line; do
-      [[ "$line" == *"xmt/rcv/%loss"* ]] || continue
-      if [[ "$line" =~ :\ ([0-9]+)/([0-9]+)/ ]]; then
-        local rcv="${BASH_REMATCH[2]}"
-        if (( rcv >= 1 )); then
-          ((ok++))
-        fi
-      fi
-    done <<<"$output"
+    ok=$(parse_fping_success_count "$output")
   fi
 
   if (( ok < MIN_OK )); then
