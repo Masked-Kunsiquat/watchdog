@@ -307,9 +307,10 @@ jobs:
           DISABLE_FILE="/etc/netwatch-agent.disable"
           EOF
 
-          # Start service and track log window
-          START_TS=$(date -u +"%Y-%m-%d %H:%M:%S")
+          # Start service and allow it to settle before capturing logs
           $SUDO systemctl restart netwatch-agent
+          sleep 5
+          START_TS=$(date -u +"%Y-%m-%d %H:%M:%S")
 
           # Wait for boot grace + a few checks
           sleep 25
@@ -363,6 +364,8 @@ jobs:
           EOF
 
           $SUDO systemctl restart netwatch-agent
+          sleep 5
+          START_TS=$(date -u +"%Y-%m-%d %H:%M:%S")
 
           # Wait for checks to detect outage
           sleep 20
