@@ -281,7 +281,7 @@ jobs:
           PING_COUNT=2
           PING_TIMEOUT=2
           CHECK_INTERVAL=5
-          DOWN_WINDOW_SECONDS=30
+          DOWN_WINDOW_SECONDS=10
           BOOT_GRACE=5
           USE_FPING="yes"
           DRY_RUN=1
