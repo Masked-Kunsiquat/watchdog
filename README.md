@@ -1,5 +1,7 @@
 # Netwatch - Proxmox WAN Watchdog
 
+[![CI](https://github.com/Masked-Kunsiquat/watchdog/actions/workflows/ci.yml/badge.svg)](https://github.com/Masked-Kunsiquat/watchdog/actions/workflows/ci.yml)
+
 **A robust WAN watchdog for single-node Proxmox VE hosts**
 
 Netwatch automatically reboots your Proxmox host after a configurable period of continuous WAN loss, providing reliable self-healing for network outages.
