@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+**Webhook Notifications**:
+- Flexible webhook system for external notifications (Discord, ntfy, Gotify, Notifiarr, Apprise, etc.)
+- Event-based notifications: `down`, `recovery`, `reboot`, `startup`, `health`
+- Custom templating with variable substitution (15+ variables: `{EVENT}`, `{MESSAGE}`, `{HOSTNAME}`, `{TIMESTAMP}`, `{DURATION}`, `{UPTIME}`, `{TOTAL_REBOOTS}`, etc.)
+- Configurable HTTP method, headers, timeout, and event filtering
+- Non-blocking background execution (doesn't delay reboot actions)
+- Persistent metrics tracking with availability calculations
+- Automatic JSON default format with opt-in custom templates
+- 8 configuration variables (`WEBHOOK_ENABLED`, `WEBHOOK_URL`, `WEBHOOK_METHOD`, `WEBHOOK_EVENTS`, `WEBHOOK_TIMEOUT`, `WEBHOOK_HEALTH_INTERVAL`, `WEBHOOK_HEADERS`, `WEBHOOK_BODY_TEMPLATE`)
+- Startup notifications for post-reboot confirmation (sent if uptime < 10 minutes)
+- Periodic health reports with comprehensive metrics (configurable interval, default 24h)
+- Test script (`scripts/test-webhook.sh`) for on-demand notification testing
+- Examples for 5+ popular notification services in config template
+
 ### Planned for Future Releases
 - Optional .deb packaging (Phase 5.3)
 - HTTP/TCP layer 7 health checks (Phase 6)
@@ -14,11 +30,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Prometheus metrics exporter (Phase 6)
 - Web dashboard for multi-host monitoring (Phase 6)
 
-## [v0.1.0] - 2025-12-08
+## [v0.4.0-rc1] - 2025-12-08
 
-**Production-Ready Release** - All core phases complete (Phases 0-5)
+**Phase 5 Complete** - Production-ready documentation and polish
 
-This release marks the completion of the Netwatch MVP with comprehensive documentation, testing, and production-ready code. The watchdog is ready for deployment on Proxmox VE and Debian systems.
+This release marks the completion of Phase 5 with comprehensive documentation, testing, and production-ready code. The watchdog is ready for deployment on Proxmox VE and Debian systems.
 
 ### Added
 
@@ -188,7 +204,7 @@ Project bootstrap and foundation (Phase 0).
 - **v0.1.0-dev** (2025-12-08): Core agent implementation (Phase 1)
 - **v0.2.0-alpha** (2025-12-08): Installers and systemd integration (Phases 2-3)
 - **v0.3.0-beta** (2025-12-08): Testing suite and QA (Phase 4)
-- **v0.1.0** (2025-12-08): Production-ready release with documentation (Phase 5) ✓
+- **v0.4.0-rc1** (2025-12-08): Documentation and polish (Phase 5) ✓
 
 ## Semantic Versioning
 
@@ -200,8 +216,9 @@ This project follows [Semantic Versioning](https://semver.org/):
 
 ### Future Version Roadmap
 
-- **v0.2.0**: Optional .deb packaging, enhanced installation experience
-- **v0.3.0**: Advanced monitoring features (HTTP/TCP checks)
+- **v0.5.0**: Webhook notifications (current unreleased work)
+- **v0.6.0**: Optional .deb packaging, enhanced installation experience
+- **v0.7.0**: Advanced monitoring features (HTTP/TCP checks)
 - **v1.0.0**: Long-term support release with production hardening
 
 ---

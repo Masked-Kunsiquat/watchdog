@@ -9,9 +9,10 @@ Netwatch automatically reboots your Proxmox host after a configurable period of 
 - **Parallel ICMP probing** of multiple targets (fping or fallback ping)
 - **Configurable outage window** before reboot action
 - **Safety rails**: boot grace period, cooldown between reboots
+- **Webhook notifications** for Discord, ntfy, Gotify, Notifiarr, Apprise, and more
 - **Dry-run mode** for safe testing
 - **Systemd integration** with automatic restart and Type=notify support
-- **Zero dependencies** beyond coreutils (shell + systemd only)
+- **Zero dependencies** beyond coreutils (shell + systemd only, curl optional for webhooks)
 
 ## Quick Start
 
@@ -90,6 +91,102 @@ DRY_RUN=1
 DOWN_WINDOW_SECONDS=30
 CHECK_INTERVAL=5
 ```
+
+### Webhook Notifications
+
+Netwatch can send notifications to external services via webhooks for key events.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `WEBHOOK_ENABLED` | `0` | Enable webhook notifications (`1` = enabled, `0` = disabled). |
+| `WEBHOOK_URL` | (empty) | HTTP(S) URL to send notifications to. Required if webhooks enabled. |
+| `WEBHOOK_METHOD` | `POST` | HTTP method to use (`POST`, `GET`, `PUT`, etc.). |
+| `WEBHOOK_EVENTS` | `down,recovery,reboot,startup,health` | Comma-separated list of events to notify on. |
+| `WEBHOOK_TIMEOUT` | `10` | Timeout in seconds for webhook HTTP requests. |
+| `WEBHOOK_HEALTH_INTERVAL` | `86400` | Interval in seconds between health reports (24 hours). Set to `0` to disable. |
+| `WEBHOOK_HEADERS` | (empty) | Custom HTTP headers (semicolon-separated, e.g., `Content-Type: application/json;Authorization: Bearer token`). |
+| `WEBHOOK_BODY_TEMPLATE` | (JSON) | Custom body template with variable substitution (see examples below). |
+
+**Event Types**:
+- `down` - WAN connectivity lost (sent when outage begins)
+- `recovery` - WAN connectivity restored (sent when connection returns)
+- `reboot` - System about to reboot due to sustained outage
+- `startup` - Service started after system boot (sent if uptime < 10 minutes - useful for confirming post-reboot recovery)
+- `health` - Periodic health report with metrics (sent every `WEBHOOK_HEALTH_INTERVAL` seconds)
+
+**Available template variables**:
+- `{EVENT}` - Event type
+- `{MESSAGE}` - Human-readable event message
+- `{HOSTNAME}` - System hostname
+- `{TIMESTAMP}` - ISO 8601 timestamp (UTC)
+- `{DURATION}` - Event duration in seconds
+- `{TARGETS}` - Configured target IPs
+- `{DOWN_WINDOW}` - Configured outage threshold
+- `{UPTIME}` - System uptime in seconds
+- `{TOTAL_REBOOTS}` - Total reboots initiated by netwatch
+- `{TOTAL_OUTAGES}` - Total WAN outages detected
+- `{TOTAL_RECOVERIES}` - Total WAN recoveries
+- `{TOTAL_DOWNTIME}` - Total downtime in seconds
+- `{SERVICE_RUNTIME}` - Service runtime in seconds
+
+**Quick Setup Examples**:
+
+**Ntfy.sh** (simple notifications):
+```bash
+WEBHOOK_ENABLED=1
+WEBHOOK_URL="https://ntfy.sh/my-unique-topic"
+WEBHOOK_BODY_TEMPLATE="{HOSTNAME}: {MESSAGE}"
+```
+
+**Discord**:
+```bash
+WEBHOOK_ENABLED=1
+WEBHOOK_URL="https://discord.com/api/webhooks/YOUR_ID/YOUR_TOKEN"
+WEBHOOK_BODY_TEMPLATE='{"content":"**{HOSTNAME}**: {MESSAGE}"}'
+```
+
+**Gotify**:
+```bash
+WEBHOOK_ENABLED=1
+WEBHOOK_URL="https://gotify.example.com/message?token=YOUR_TOKEN"
+WEBHOOK_BODY_TEMPLATE='{"title":"Netwatch {EVENT}","message":"{MESSAGE}","priority":8}'
+```
+
+**Notifiarr**:
+```bash
+WEBHOOK_ENABLED=1
+WEBHOOK_URL="https://notifiarr.com/api/v1/notification/netwatch"
+WEBHOOK_HEADERS="X-API-Key: your_api_key_here"
+```
+
+**Apprise API**:
+```bash
+WEBHOOK_ENABLED=1
+WEBHOOK_URL="http://apprise.example.com:8000/notify"
+WEBHOOK_BODY_TEMPLATE='{"urls":["discord://webhook_id/webhook_token"],"title":"Netwatch {EVENT}","body":"{MESSAGE}"}'
+```
+
+**Default JSON format** (if no template specified):
+```json
+{
+  "event": "down",
+  "message": "WAN connectivity lost...",
+  "hostname": "proxmox",
+  "timestamp": "2025-12-08T12:34:56Z",
+  "duration": 0,
+  "targets": "1.1.1.1 8.8.8.8 9.9.9.9"
+}
+```
+
+**Requirements**: Webhooks require `curl` to be installed (`apt install curl`).
+
+**Testing webhooks**:
+```bash
+# Test your webhook configuration (sends test notification)
+sudo ./scripts/test-webhook.sh
+```
+
+This will send a test notification to verify your URL, authentication, and formatting are correct.
 
 ## Testing Guide
 
