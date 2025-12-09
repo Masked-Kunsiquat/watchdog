@@ -308,9 +308,9 @@ jobs:
           EOF
 
           # Start service and allow it to settle before capturing logs
+          START_TS=$(date -u +"%Y-%m-%d %H:%M:%S")
           $SUDO systemctl restart netwatch-agent
           sleep 5
-          START_TS=$(date -u +"%Y-%m-%d %H:%M:%S")
 
           # Wait for boot grace + a few checks
           sleep 25
@@ -365,7 +365,6 @@ jobs:
 
           $SUDO systemctl restart netwatch-agent
           sleep 5
-          START_TS=$(date -u +"%Y-%m-%d %H:%M:%S")
 
           # Wait for checks to detect outage
           sleep 20
