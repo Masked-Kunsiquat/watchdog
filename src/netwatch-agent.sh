@@ -404,6 +404,7 @@ probe_icmp() {
     log "using fping for parallel ICMP probing"
     local timeout_ms=$((PING_TIMEOUT * 1000))
     local output
+    local fping_ok=0
 
     # Run fping and capture output (redirects stderr to stdout)
     output=$("$FPING_BIN" -c "$PING_COUNT" -t "$timeout_ms" -q "${targets[@]}" 2>&1 || true)
@@ -416,9 +417,26 @@ probe_icmp() {
         local rcv="${BASH_REMATCH[2]}"
         if (( rcv >= 1 )); then
           ((ok++))
+          ((fping_ok++))
         fi
       fi
     done <<<"$output"
+
+    # If fping reported zero successes, log why and fall back to ping once
+    if (( fping_ok == 0 )); then
+      log "fping returned zero replies; falling back to ping fallback. fping output: ${output//$'\n'/ | }"
+      ok=0
+      local -a pids=()
+      for host in "${targets[@]}"; do
+        (/bin/ping -n -q -c "$PING_COUNT" -W "$PING_TIMEOUT" "$host" >/dev/null 2>&1) &
+        pids+=($!)
+      done
+      for pid in "${pids[@]}"; do
+        if wait "$pid"; then
+          ((ok++))
+        fi
+      done
+    fi
   else
     # Fallback: parallel background pings
     log "using ping for ICMP probing (fping unavailable or disabled)"
