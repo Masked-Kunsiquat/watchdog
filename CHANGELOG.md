@@ -14,11 +14,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Prometheus metrics exporter (Phase 6)
 - Web dashboard for multi-host monitoring (Phase 6)
 
-## [v0.1.0] - 2025-12-08
+## [v0.4.0-rc1] - 2025-12-08
 
-**Production-Ready Release** - All core phases complete (Phases 0-5)
+**Phase 5 Complete** - Production-ready documentation and polish
 
-This release marks the completion of the Netwatch MVP with comprehensive documentation, testing, and production-ready code. The watchdog is ready for deployment on Proxmox VE and Debian systems.
+This release marks the completion of Phase 5 with comprehensive documentation, testing, and production-ready code. The watchdog is ready for deployment on Proxmox VE and Debian systems.
 
 ### Added
 
@@ -188,7 +188,7 @@ Project bootstrap and foundation (Phase 0).
 - **v0.1.0-dev** (2025-12-08): Core agent implementation (Phase 1)
 - **v0.2.0-alpha** (2025-12-08): Installers and systemd integration (Phases 2-3)
 - **v0.3.0-beta** (2025-12-08): Testing suite and QA (Phase 4)
-- **v0.1.0** (2025-12-08): Production-ready release with documentation (Phase 5) ✓
+- **v0.4.0-rc1** (2025-12-08): Documentation and polish (Phase 5) ✓
 
 ## Semantic Versioning
 
