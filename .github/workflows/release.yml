@@ -36,6 +36,12 @@ jobs:
           chmod +x scripts/build-deb.sh
           VERSION="$VERSION" ./scripts/build-deb.sh
 
+      - name: Verify artifacts
+        run: |
+          ls -l dist
+          test -f "dist/netwatch-agent_${VERSION}.tar.gz"
+          test -f "dist/netwatch-agent_${VERSION}_all.deb"
+
       - name: Upload release assets
         uses: softprops/action-gh-release@v2
         with:
