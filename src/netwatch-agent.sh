@@ -335,7 +335,13 @@ fi
 # State tracking
 DOWN_START=-1      # Timestamp when outage started (-1 = currently up)
 LAST_REBOOT=0      # Timestamp of last reboot (for cooldown enforcement)
-NEXT_HEALTH_REPORT=$(($(now) + WEBHOOK_HEALTH_INTERVAL))
+
+# Initialize health report schedule only if enabled
+if (( WEBHOOK_HEALTH_INTERVAL > 0 )); then
+  NEXT_HEALTH_REPORT=$(($(now) + WEBHOOK_HEALTH_INTERVAL))
+else
+  NEXT_HEALTH_REPORT=0  # Disabled
+fi
 
 #
 # Main monitoring loop
@@ -401,8 +407,8 @@ while true; do
     fi
   fi
 
-  # Send periodic health report
-  if (( $(now) >= NEXT_HEALTH_REPORT )); then
+  # Send periodic health report (only if enabled)
+  if (( WEBHOOK_HEALTH_INTERVAL > 0 )) && (( $(now) >= NEXT_HEALTH_REPORT )); then
     UPTIME_HOURS=$(( $(/usr/bin/cut -d. -f1 /proc/uptime) / 3600 ))
     DOWNTIME_HOURS=$((TOTAL_DOWNTIME_SECONDS / 3600))
     AVAILABILITY_PCT=$(( (TOTAL_DOWNTIME_SECONDS > 0) ? (100 - (TOTAL_DOWNTIME_SECONDS * 100 / ($(now) - SERVICE_START_TIME))) : 100 ))
