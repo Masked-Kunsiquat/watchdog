@@ -292,7 +292,7 @@ test_ping_fallback_all_down() {
 
   local -a pids=()
   for host in "${targets[@]}"; do
-    ("$MOCK_DIR/ping" -n -q -c "$PING_COUNT" -W "$PING_TIMEOUT" "$host" >/dev/null 2>&1) &
+    ("$MOCK_PING" -n -q -c "$PING_COUNT" -W "$PING_TIMEOUT" "$host" >/dev/null 2>&1) &
     pids+=($!)
   done
 
