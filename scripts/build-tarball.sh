@@ -6,7 +6,7 @@ set -Eeuo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_DIR="$ROOT_DIR/dist"
-VERSION="${VERSION:-$([ -r "$ROOT_DIR/VERSION" ] && <"$ROOT_DIR/VERSION" || printf '')}"
+VERSION="${VERSION:-$(/bin/cat "$ROOT_DIR/VERSION" 2>/dev/null || printf '')}"
 
 if [[ -z "$VERSION" ]]; then
   echo "ERROR: VERSION not set and VERSION file missing" >&2
