@@ -297,11 +297,11 @@ jobs:
           HEALTH_CHECK_MODE="icmp"
           TARGETS="8.8.8.8 1.1.1.1 9.9.9.9"
           MIN_OK=2
-          PING_COUNT=2
-          PING_TIMEOUT=2
+          PING_COUNT=3
+          PING_TIMEOUT=3
           CHECK_INTERVAL=5
           DOWN_WINDOW_SECONDS=10
-          BOOT_GRACE=0
+          BOOT_GRACE=10
           USE_FPING="yes"
           DRY_RUN=1
           DISABLE_FILE="/etc/netwatch-agent.disable"
@@ -312,7 +312,7 @@ jobs:
           $SUDO systemctl restart netwatch-agent
 
           # Wait for boot grace + a few checks
-          sleep 15
+          sleep 25
 
           # Verify fping is being used
           if ! $SUDO journalctl -u netwatch-agent --no-pager --since "$START_TS" | grep -i "using fping"; then
@@ -346,8 +346,22 @@ jobs:
           $SUDO iptables -I OUTPUT -p icmp -d 9.9.9.9 -j DROP
           echo "iptables rules inserted successfully"
 
-          # Restart service to pick up state with blocked ICMP
+          # Restart service to pick up state with blocked ICMP (no boot grace)
           START_TS=$(date -u +"%Y-%m-%d %H:%M:%S")
+          $SUDO tee /etc/default/netwatch-agent > /dev/null <<'EOF'
+          HEALTH_CHECK_MODE="icmp"
+          TARGETS="8.8.8.8 1.1.1.1 9.9.9.9"
+          MIN_OK=2
+          PING_COUNT=3
+          PING_TIMEOUT=3
+          CHECK_INTERVAL=5
+          DOWN_WINDOW_SECONDS=10
+          BOOT_GRACE=0
+          USE_FPING="yes"
+          DRY_RUN=1
+          DISABLE_FILE="/etc/netwatch-agent.disable"
+          EOF
+
           $SUDO systemctl restart netwatch-agent
 
           # Wait for checks to detect outage
