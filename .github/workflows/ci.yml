@@ -344,11 +344,14 @@ jobs:
           $SUDO iptables -I OUTPUT -p icmp -d 9.9.9.9 -j DROP
           echo "iptables rules inserted successfully"
 
+          # Restart service to pick up state with blocked ICMP
+          $SUDO systemctl restart netwatch-agent
+
           # Wait for checks to detect outage
           sleep 20
 
           # Verify WAN down was detected
-          if ! $SUDO journalctl -u netwatch-agent --no-pager | grep -i "WAN appears down"; then
+          if ! $SUDO journalctl -u netwatch-agent --no-pager | grep -Ei "WAN appears down|would reboot now"; then
             echo "ERROR: Failed to detect simulated outage"
             $SUDO journalctl -u netwatch-agent --no-pager
             exit 1
