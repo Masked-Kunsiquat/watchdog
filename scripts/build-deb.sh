@@ -6,7 +6,7 @@ set -Eeuo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_DIR="$ROOT_DIR/dist"
-VERSION="${VERSION:-$(cat "$ROOT_DIR/VERSION" 2>/dev/null || true)}"
+VERSION="${VERSION:-$([ -r "$ROOT_DIR/VERSION" ] && <"$ROOT_DIR/VERSION" || printf '')}"
 
 if [[ -z "$VERSION" ]]; then
   echo "ERROR: VERSION not set and VERSION file missing" >&2
@@ -16,22 +16,22 @@ fi
 STAGE_DIR="$DIST_DIR/netwatch-agent_${VERSION}"
 DEB_PATH="$DIST_DIR/netwatch-agent_${VERSION}_all.deb"
 
-rm -rf "$STAGE_DIR"
-mkdir -p "$STAGE_DIR/DEBIAN" \
+/bin/rm -rf "$STAGE_DIR"
+/bin/mkdir -p "$STAGE_DIR/DEBIAN" \
   "$STAGE_DIR/usr/local/sbin" \
   "$STAGE_DIR/etc/default" \
   "$STAGE_DIR/etc/systemd/system" \
   "$STAGE_DIR/usr/share/doc/netwatch-agent"
 
 # Install files with correct permissions
-install -m 0755 "$ROOT_DIR/src/netwatch-agent.sh" "$STAGE_DIR/usr/local/sbin/netwatch-agent.sh"
-install -m 0644 "$ROOT_DIR/config/netwatch-agent.conf" "$STAGE_DIR/etc/default/netwatch-agent"
-install -m 0644 "$ROOT_DIR/config/netwatch-agent.service" "$STAGE_DIR/etc/systemd/system/netwatch-agent.service"
-install -m 0644 "$ROOT_DIR/LICENSE" "$STAGE_DIR/usr/share/doc/netwatch-agent/copyright"
-install -m 0644 "$ROOT_DIR/README.md" "$ROOT_DIR/CHANGELOG.md" "$ROOT_DIR/VERSION" "$STAGE_DIR/usr/share/doc/netwatch-agent/"
+/usr/bin/install -m 0755 "$ROOT_DIR/src/netwatch-agent.sh" "$STAGE_DIR/usr/local/sbin/netwatch-agent.sh"
+/usr/bin/install -m 0644 "$ROOT_DIR/config/netwatch-agent.conf" "$STAGE_DIR/etc/default/netwatch-agent"
+/usr/bin/install -m 0644 "$ROOT_DIR/config/netwatch-agent.service" "$STAGE_DIR/etc/systemd/system/netwatch-agent.service"
+/usr/bin/install -m 0644 "$ROOT_DIR/LICENSE" "$STAGE_DIR/usr/share/doc/netwatch-agent/copyright"
+/usr/bin/install -m 0644 "$ROOT_DIR/README.md" "$ROOT_DIR/CHANGELOG.md" "$ROOT_DIR/VERSION" "$STAGE_DIR/usr/share/doc/netwatch-agent/"
 
 # Compress changelog per Debian policy (keep simple gzip)
-gzip -fn9 "$STAGE_DIR/usr/share/doc/netwatch-agent/CHANGELOG.md"
+/bin/gzip -fn9 "$STAGE_DIR/usr/share/doc/netwatch-agent/CHANGELOG.md"
 
 # Control file
 cat >"$STAGE_DIR/DEBIAN/control" <<EOF
@@ -51,28 +51,28 @@ Description: WAN watchdog for Proxmox VE (reboots on sustained WAN loss)
 EOF
 
 # Post-install: reload daemon and enable service
-cat >"$STAGE_DIR/DEBIAN/postinst" <<'EOF'
+/bin/cat >"$STAGE_DIR/DEBIAN/postinst" <<'EOF'
 #!/bin/sh
 set -e
-if command -v systemctl >/dev/null 2>&1; then
-  systemctl daemon-reload || true
-  systemctl enable --now netwatch-agent.service || true
+if [ -x /usr/bin/systemctl ]; then
+  /usr/bin/systemctl daemon-reload || true
+  /usr/bin/systemctl enable --now netwatch-agent.service || true
 fi
 exit 0
 EOF
 
 # Pre-remove: stop service
-cat >"$STAGE_DIR/DEBIAN/prerm" <<'EOF'
+/bin/cat >"$STAGE_DIR/DEBIAN/prerm" <<'EOF'
 #!/bin/sh
 set -e
-if command -v systemctl >/dev/null 2>&1; then
-  systemctl stop netwatch-agent.service || true
+if [ -x /usr/bin/systemctl ]; then
+  /usr/bin/systemctl stop netwatch-agent.service || true
 fi
 exit 0
 EOF
 
-chmod 0755 "$STAGE_DIR/DEBIAN/postinst" "$STAGE_DIR/DEBIAN/prerm"
+/bin/chmod 0755 "$STAGE_DIR/DEBIAN/postinst" "$STAGE_DIR/DEBIAN/prerm"
 
-dpkg-deb --build "$STAGE_DIR" "$DEB_PATH"
+/usr/bin/dpkg-deb --build "$STAGE_DIR" "$DEB_PATH"
 
 echo "Created $DEB_PATH"
