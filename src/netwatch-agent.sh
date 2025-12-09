@@ -379,14 +379,20 @@ probe_icmp() {
   local -a targets
   read -ra targets <<< "$TARGETS"
 
+  # Determine fping binary (prefer /usr/sbin, fallback to /usr/bin for Debian/Ubuntu)
+  local FPING_BIN="/usr/sbin/fping"
+  if [[ ! -x "$FPING_BIN" ]] && [[ -x /usr/bin/fping ]]; then
+    FPING_BIN="/usr/bin/fping"
+  fi
+
   # Prefer fping for efficient parallel probing
-  if [[ "$USE_FPING" != "no" ]] && [[ -x /usr/sbin/fping ]]; then
+  if [[ "$USE_FPING" != "no" ]] && [[ -x "$FPING_BIN" ]]; then
     log "using fping for parallel ICMP probing"
     local timeout_ms=$((PING_TIMEOUT * 1000))
     local output
 
     # Run fping and capture output (redirects stderr to stdout)
-    output=$(/usr/sbin/fping -c "$PING_COUNT" -t "$timeout_ms" -q "${targets[@]}" 2>&1 || true)
+    output=$("$FPING_BIN" -c "$PING_COUNT" -t "$timeout_ms" -q "${targets[@]}" 2>&1 || true)
 
     # Parse fping summary lines: look for "xmt/rcv/%loss" with rcv >= 1
     while IFS= read -r line; do
