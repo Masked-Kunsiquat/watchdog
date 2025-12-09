@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v1.0.0] - 2025-12-09
+
 ### Added
 - **HTTP/TCP Health Check Modes**: Alternative health check methods to ICMP ping
   - TCP mode: Layer 4 TCP connection tests using netcat (bypasses ICMP filters)
@@ -15,11 +17,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Parallel probing for all modes (maintains timing determinism)
   - Automatic dependency validation at startup with clear error messages
   - Backwards compatible: defaults to ICMP mode if not configured
+- CI hardening: shared sudo helper for all jobs; consistent restart semantics for dependency validation; stabilized integration timings to reduce flakes
+- Installer/uninstaller: root-first, sudo-optional execution for Proxmox environments where sudo may be absent
 
 ### Changed
 - Renamed `parallel_probe()` to dispatcher function that routes to mode-specific probes
 - ICMP probe logic moved to `probe_icmp()` (unchanged behavior)
 - `PING_TIMEOUT` now applies to all modes (ICMP, TCP connection, HTTP request)
+- systemd notify handling tightened (only when NOTIFY_SOCKET is set); clearer dependency error messages for curl/netcat/fping
 
 ### Planned for Future Releases
 - Optional .deb packaging (Phase 5.3)

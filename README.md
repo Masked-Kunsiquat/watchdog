@@ -9,26 +9,28 @@ Netwatch automatically reboots your Proxmox host after a configurable period of 
 ## Features
 
 - **Parallel ICMP probing** of multiple targets (fping or fallback ping)
+- **TCP and HTTP health checks** for Layer 4/7 validation (netcat/curl)
 - **Configurable outage window** before reboot action
 - **Safety rails**: boot grace period, cooldown between reboots
 - **Webhook notifications** for Discord, ntfy, Gotify, Notifiarr, Apprise, and more
 - **Dry-run mode** for safe testing
 - **Systemd integration** with automatic restart and Type=notify support
 - **Zero dependencies** beyond coreutils (shell + systemd only, curl optional for webhooks)
+- **Root-first, sudo-optional** installers for Proxmox environments without sudo
 
 ## Quick Start
 
 Install and verify in under 3 commands:
 
 ```bash
-# 1. Install
-sudo ./scripts/install.sh
+# 1. Install (run as root; prefix with sudo if available)
+./scripts/install.sh
 
 # 2. Check status
-sudo systemctl status netwatch-agent
+systemctl status netwatch-agent
 
 # 3. View logs
-sudo journalctl -u netwatch-agent -f
+journalctl -u netwatch-agent -f
 ```
 
 That's it! The watchdog is now monitoring your WAN connection.
