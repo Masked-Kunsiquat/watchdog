@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+**Webhook Notifications**:
+- Flexible webhook system for external notifications (Discord, ntfy, Gotify, Notifiarr, Apprise, etc.)
+- Event-based notifications: `down`, `recovery`, `reboot`
+- Custom templating with variable substitution (`{EVENT}`, `{MESSAGE}`, `{HOSTNAME}`, `{TIMESTAMP}`, `{DURATION}`, etc.)
+- Configurable HTTP method, headers, and timeout
+- Event filtering (choose which events trigger webhooks)
+- Non-blocking background execution (doesn't delay reboot actions)
+- Automatic JSON default format with opt-in custom templates
+- 7 configuration variables for complete control
+- Examples for 5+ popular notification services in config template
+
 ### Planned for Future Releases
 - Optional .deb packaging (Phase 5.3)
 - HTTP/TCP layer 7 health checks (Phase 6)
