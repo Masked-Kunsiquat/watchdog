@@ -60,9 +60,6 @@ fi
 : "${WEBHOOK_TIMEOUT:=10}"
 : "${WEBHOOK_HEALTH_INTERVAL:=86400}"  # Daily health report (24 hours)
 
-# Metrics persistence
-METRICS_FILE="$STATE_DIR/metrics.dat"
-
 #
 # Utility functions
 #
