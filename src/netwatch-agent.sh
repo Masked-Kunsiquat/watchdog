@@ -25,7 +25,11 @@ mkdir -p "$STATE_DIR"
 [[ -r /etc/default/netwatch-agent ]] && . /etc/default/netwatch-agent
 
 # Apply defaults for all configuration variables
+: "${HEALTH_CHECK_MODE:=icmp}"
 : "${TARGETS:=1.1.1.1 8.8.8.8 9.9.9.9}"
+: "${TCP_TARGETS:=1.1.1.1:853 8.8.8.8:443 9.9.9.9:443}"
+: "${HTTP_TARGETS:=https://1.1.1.1 https://8.8.8.8 https://9.9.9.9}"
+: "${HTTP_EXPECTED_CODE:=200}"
 : "${MIN_OK:=1}"
 : "${PING_COUNT:=1}"
 : "${PING_TIMEOUT:=1}"
@@ -232,12 +236,140 @@ send_webhook() {
 }
 
 #
-# Core probe function: check if WAN is reachable
+# TCP probe function: check if WAN is reachable via TCP connection
 #
 # Returns 0 (success) if at least MIN_OK targets respond
 # Returns 1 (failure) if fewer than MIN_OK targets respond
 #
-parallel_probe() {
+probe_tcp() {
+  local ok=0
+  local -a targets
+  read -ra targets <<< "$TCP_TARGETS"
+
+  # Check if netcat is available
+  local nc_cmd=""
+  if [[ -x /bin/nc ]]; then
+    nc_cmd="/bin/nc"
+  elif [[ -x /usr/bin/nc ]]; then
+    nc_cmd="/usr/bin/nc"
+  else
+    log "ERROR: netcat (nc) not found - TCP health checks require netcat"
+    return 1
+  fi
+
+  # Parallel TCP connection attempts
+  local -a pids=()
+  local -a tmp_files=()
+
+  for target in "${targets[@]}"; do
+    # Split host:port
+    if [[ ! "$target" =~ ^([^:]+):([0-9]+)$ ]]; then
+      log "WARNING: Invalid TCP target format: $target (expected host:port)"
+      continue
+    fi
+
+    local host="${BASH_REMATCH[1]}"
+    local port="${BASH_REMATCH[2]}"
+
+    # Create temp file for this check
+    local tmp_file
+    tmp_file=$(/bin/mktemp -p "$STATE_DIR" nc.XXXXXX)
+    tmp_files+=("$tmp_file")
+
+    # Background TCP connection test
+    (
+      if "$nc_cmd" -z -w "$PING_TIMEOUT" "$host" "$port" >/dev/null 2>&1; then
+        echo "ok" > "$tmp_file"
+      fi
+    ) &
+    pids+=($!)
+  done
+
+  # Wait for all probes to complete
+  for pid in "${pids[@]}"; do
+    wait "$pid" 2>/dev/null || true
+  done
+
+  # Count successes
+  for tmp_file in "${tmp_files[@]}"; do
+    if [[ -f "$tmp_file" ]] && [[ "$(<"$tmp_file")" == "ok" ]]; then
+      ((ok++))
+    fi
+    /bin/rm -f "$tmp_file" 2>/dev/null || true
+  done
+
+  # Success if we met the minimum threshold
+  (( ok >= MIN_OK ))
+}
+
+#
+# HTTP probe function: check if WAN is reachable via HTTP/HTTPS request
+#
+# Returns 0 (success) if at least MIN_OK targets respond
+# Returns 1 (failure) if fewer than MIN_OK targets respond
+#
+probe_http() {
+  local ok=0
+  local -a targets
+  read -ra targets <<< "$HTTP_TARGETS"
+
+  # Check if curl is available
+  if ! [[ -x /usr/bin/curl ]]; then
+    log "ERROR: curl not found - HTTP health checks require curl"
+    return 1
+  fi
+
+  # Parallel HTTP requests
+  local -a pids=()
+  local -a tmp_files=()
+
+  for url in "${targets[@]}"; do
+    # Create temp file for this check
+    local tmp_file
+    tmp_file=$(/bin/mktemp -p "$STATE_DIR" http.XXXXXX)
+    tmp_files+=("$tmp_file")
+
+    # Background HTTP request
+    (
+      # Use --insecure to allow self-signed certs, --fail to error on HTTP errors
+      # -m for timeout, -s for silent, -o to write status code
+      local status_code
+      status_code=$(/usr/bin/curl -s -o /dev/null -w "%{http_code}" \
+        --insecure \
+        -m "$PING_TIMEOUT" \
+        "$url" 2>/dev/null || echo "000")
+
+      if [[ "$status_code" == "$HTTP_EXPECTED_CODE" ]]; then
+        echo "ok" > "$tmp_file"
+      fi
+    ) &
+    pids+=($!)
+  done
+
+  # Wait for all probes to complete
+  for pid in "${pids[@]}"; do
+    wait "$pid" 2>/dev/null || true
+  done
+
+  # Count successes
+  for tmp_file in "${tmp_files[@]}"; do
+    if [[ -f "$tmp_file" ]] && [[ "$(<"$tmp_file")" == "ok" ]]; then
+      ((ok++))
+    fi
+    /bin/rm -f "$tmp_file" 2>/dev/null || true
+  done
+
+  # Success if we met the minimum threshold
+  (( ok >= MIN_OK ))
+}
+
+#
+# ICMP probe function: check if WAN is reachable via ICMP ping
+#
+# Returns 0 (success) if at least MIN_OK targets respond
+# Returns 1 (failure) if fewer than MIN_OK targets respond
+#
+probe_icmp() {
   local ok=0
   local -a targets
   read -ra targets <<< "$TARGETS"
@@ -283,6 +415,31 @@ parallel_probe() {
 }
 
 #
+# Main probe dispatcher: routes to appropriate health check method
+#
+# Returns 0 (success) if WAN is reachable
+# Returns 1 (failure) if WAN is unreachable
+#
+parallel_probe() {
+  case "$HEALTH_CHECK_MODE" in
+    icmp)
+      probe_icmp
+      ;;
+    tcp)
+      probe_tcp
+      ;;
+    http)
+      probe_http
+      ;;
+    *)
+      log "ERROR: Invalid HEALTH_CHECK_MODE='$HEALTH_CHECK_MODE' (expected: icmp, tcp, or http)"
+      log "Falling back to ICMP mode"
+      probe_icmp
+      ;;
+  esac
+}
+
+#
 # Reboot the host with proper sync and logging
 #
 perform_reboot() {
@@ -305,6 +462,35 @@ perform_reboot() {
 #
 # Main execution
 #
+
+# Validate health check mode and dependencies
+case "$HEALTH_CHECK_MODE" in
+  icmp)
+    # ICMP only requires ping (always available)
+    log "Health check mode: ICMP (ping)"
+    ;;
+  tcp)
+    # TCP requires netcat
+    log "Health check mode: TCP (netcat)"
+    if ! [[ -x /bin/nc ]] && ! [[ -x /usr/bin/nc ]]; then
+      log "FATAL: TCP mode requires netcat (nc) - install with: apt install netcat-openbsd"
+      exit 1
+    fi
+    ;;
+  http)
+    # HTTP requires curl
+    log "Health check mode: HTTP/HTTPS (curl)"
+    if ! [[ -x /usr/bin/curl ]]; then
+      log "FATAL: HTTP mode requires curl - install with: apt install curl"
+      exit 1
+    fi
+    ;;
+  *)
+    log "ERROR: Invalid HEALTH_CHECK_MODE='$HEALTH_CHECK_MODE' (expected: icmp, tcp, or http)"
+    log "Falling back to ICMP mode"
+    HEALTH_CHECK_MODE="icmp"
+    ;;
+esac
 
 # Signal systemd that we're ready (if systemd-notify is available)
 if [[ -x /usr/bin/systemd-notify ]]; then
