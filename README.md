@@ -41,8 +41,8 @@ That's it! The watchdog is now monitoring your WAN connection.
   - `netwatch-agent_<version>.tar.gz` (source + scripts + configs)
   - `netwatch-agent_<version>_all.deb` (dpkg-deb, systemd-enabled)
 - Build locally if needed:
-  - Tarball: `VERSION=1.0.0 ./scripts/build-tarball.sh` → `dist/netwatch-agent_1.0.0.tar.gz`
-  - Debian: `VERSION=1.0.0 ./scripts/build-deb.sh` → `dist/netwatch-agent_1.0.0_all.deb`
+  - Tarball: `VERSION=<version> ./scripts/build-tarball.sh` → `dist/netwatch-agent_<version>.tar.gz`
+  - Debian: `VERSION=<version> ./scripts/build-deb.sh` → `dist/netwatch-agent_<version>_all.deb`
 
 ## Configuration Reference
 
