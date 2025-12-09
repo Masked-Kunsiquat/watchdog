@@ -18,8 +18,17 @@ PATH=/usr/sbin:/usr/bin:/sbin:/bin
 # Logging and runtime constants
 TAG="netwatch-agent"
 STATE_DIR="${STATE_DIR:-/run/netwatch-agent}"
-mkdir -p "$STATE_DIR" 2>/dev/null || STATE_DIR=/tmp/netwatch-agent-$$
-mkdir -p "$STATE_DIR"
+/bin/mkdir -p "$STATE_DIR" 2>/dev/null || STATE_DIR=/tmp/netwatch-agent-$$
+/bin/mkdir -p "$STATE_DIR"
+
+# Persistent state directory for metrics (falls back to STATE_DIR if unwritable)
+PERSIST_DIR="${PERSIST_DIR:-/var/lib/netwatch-agent}"
+if /bin/mkdir -p "$PERSIST_DIR" 2>/dev/null && /bin/touch "$PERSIST_DIR/.netwatch-test" 2>/dev/null; then
+  /bin/rm -f "$PERSIST_DIR/.netwatch-test" 2>/dev/null || true
+  METRICS_FILE="$PERSIST_DIR/metrics.dat"
+else
+  METRICS_FILE="$STATE_DIR/metrics.dat"
+fi
 
 # Load configuration from systemd EnvironmentFile
 [[ -r /etc/default/netwatch-agent ]] && . /etc/default/netwatch-agent
@@ -99,6 +108,9 @@ load_metrics() {
     # shellcheck disable=SC1090
     . "$METRICS_FILE" 2>/dev/null || true
   fi
+
+  # Always reset service runtime to current start (counters remain persistent)
+  SERVICE_START_TIME=$(now)
 }
 
 save_metrics() {
@@ -110,6 +122,8 @@ TOTAL_DOWNTIME_SECONDS=$TOTAL_DOWNTIME_SECONDS
 LAST_HEALTH_REPORT=$LAST_HEALTH_REPORT
 SERVICE_START_TIME=$SERVICE_START_TIME
 EOF
+  /bin/chmod 0600 "$METRICS_FILE" 2>/dev/null || true
+  /bin/chown root:root "$METRICS_FILE" 2>/dev/null || true
 }
 
 increment_metric() {
