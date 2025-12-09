@@ -38,14 +38,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install agent first
-        run: |
-          sudo ./scripts/install.sh
-
-      - name: Run smoke tests
+      - name: Run smoke tests (verbose for debugging)
         run: |
           cd tests
-          sudo bash smoke-test.sh
+          bash smoke-test.sh --verbose
 
   tcp-health-check:
     name: TCP Health Check Tests
