@@ -180,6 +180,14 @@ WEBHOOK_BODY_TEMPLATE='{"urls":["discord://webhook_id/webhook_token"],"title":"N
 
 **Requirements**: Webhooks require `curl` to be installed (`apt install curl`).
 
+**Testing webhooks**:
+```bash
+# Test your webhook configuration (sends test notification)
+sudo ./scripts/test-webhook.sh
+```
+
+This will send a test notification to verify your URL, authentication, and formatting are correct.
+
 ## Testing Guide
 
 ### Dry-Run Testing (Recommended First Step)

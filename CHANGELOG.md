@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 8 configuration variables (`WEBHOOK_ENABLED`, `WEBHOOK_URL`, `WEBHOOK_METHOD`, `WEBHOOK_EVENTS`, `WEBHOOK_TIMEOUT`, `WEBHOOK_HEALTH_INTERVAL`, `WEBHOOK_HEADERS`, `WEBHOOK_BODY_TEMPLATE`)
 - Startup notifications for post-reboot confirmation (sent if uptime < 10 minutes)
 - Periodic health reports with comprehensive metrics (configurable interval, default 24h)
+- Test script (`scripts/test-webhook.sh`) for on-demand notification testing
 - Examples for 5+ popular notification services in config template
 
 ### Planned for Future Releases
