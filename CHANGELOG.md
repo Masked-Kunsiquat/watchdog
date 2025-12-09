@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (pending release)
+- Release workflow: on `v*` tags, build and upload artifacts to the GitHub Release.
+- Debian packaging script (`scripts/build-deb.sh`) to build `netwatch-agent_<version>_all.deb` via dpkg-deb (no network), including systemd enablement hooks.
+
 ## [v1.0.0] - 2025-12-09
 
 ### Added

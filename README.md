@@ -35,6 +35,15 @@ journalctl -u netwatch-agent -f
 
 That's it! The watchdog is now monitoring your WAN connection.
 
+## Release Artifacts
+
+- CI builds artifacts on every `v*` tag and uploads them to the GitHub Release:
+  - `netwatch-agent_<version>.tar.gz` (source + scripts + configs)
+  - `netwatch-agent_<version>_all.deb` (dpkg-deb, systemd-enabled)
+- Build locally if needed:
+  - Tarball: `VERSION=1.0.0 ./scripts/build-tarball.sh` → `dist/netwatch-agent_1.0.0.tar.gz`
+  - Debian: `VERSION=1.0.0 ./scripts/build-deb.sh` → `dist/netwatch-agent_1.0.0_all.deb`
+
 ## Configuration Reference
 
 All settings are in `/etc/default/netwatch-agent`. After editing, restart the service:
