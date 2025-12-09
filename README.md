@@ -10,43 +10,200 @@ Netwatch automatically reboots your Proxmox host after a configurable period of 
 - **Configurable outage window** before reboot action
 - **Safety rails**: boot grace period, cooldown between reboots
 - **Dry-run mode** for safe testing
-- **Systemd integration** with automatic restart
+- **Systemd integration** with automatic restart and Type=notify support
 - **Zero dependencies** beyond coreutils (shell + systemd only)
 
 ## Quick Start
 
+Install and verify in under 3 commands:
+
 ```bash
-# Install
+# 1. Install
 sudo ./scripts/install.sh
 
-# Check status
+# 2. Check status
 sudo systemctl status netwatch-agent
 
-# View logs
+# 3. View logs
 sudo journalctl -u netwatch-agent -f
+```
 
-# Test with dry-run
-sudo systemctl edit netwatch-agent
-# Add: Environment="DRY_RUN=1"
+That's it! The watchdog is now monitoring your WAN connection.
+
+## Configuration Reference
+
+All settings are in `/etc/default/netwatch-agent`. After editing, restart the service:
+
+```bash
+sudo nano /etc/default/netwatch-agent
 sudo systemctl restart netwatch-agent
 ```
 
-## Configuration
+### Network Probing
 
-Edit `/etc/default/netwatch-agent` to customize:
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `TARGETS` | `1.1.1.1 8.8.8.8 9.9.9.9` | Space-separated IP addresses to probe. Use IPs (not DNS names) from multiple providers for reliability. |
+| `MIN_OK` | `1` | Minimum number of targets that must respond to consider WAN "up". |
+| `PING_COUNT` | `1` | ICMP echo requests per target per loop. |
+| `PING_TIMEOUT` | `1` | Timeout in seconds per target probe. |
+| `USE_FPING` | `auto` | Use fping if available (`auto`), always use (`yes`), or never use (`no`). |
 
-- `TARGETS` - Space-separated IPs to probe (default: 1.1.1.1 8.8.8.8 9.9.9.9)
-- `DOWN_WINDOW_SECONDS` - Continuous outage before reboot (default: 600)
-- `CHECK_INTERVAL` - Seconds between health checks (default: 10)
-- `COOLDOWN_SECONDS` - Minimum time between reboots (default: 1200)
+### Timing & Safety
 
-See [AGENTS.md](AGENTS.md) for full configuration reference.
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CHECK_INTERVAL` | `10` | Seconds between health check loops. |
+| `DOWN_WINDOW_SECONDS` | `600` | Continuous WAN outage duration (wall-clock) before triggering reboot. |
+| `BOOT_GRACE` | `180` | Seconds after boot before monitoring starts (prevents boot loops). |
+| `COOLDOWN_SECONDS` | `1200` | Minimum seconds between reboot actions (prevents rapid reboots). |
 
-## Operations
+### Control & Testing
 
-**Pause watchdog**:
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DRY_RUN` | `0` | Set to `1` to log reboot decisions without actually rebooting. Perfect for testing. |
+| `DISABLE_FILE` | `/etc/netwatch-agent.disable` | If this file exists, monitoring is paused (sleeps 30s per loop). |
+
+### Example Configurations
+
+**Conservative (home router)**:
+```bash
+TARGETS="1.1.1.1 8.8.8.8 9.9.9.9 208.67.222.222"
+MIN_OK=2
+DOWN_WINDOW_SECONDS=900    # 15 minutes
+CHECK_INTERVAL=30          # Check every 30s
+```
+
+**Aggressive (datacenter with redundant uplinks)**:
+```bash
+TARGETS="1.1.1.1 8.8.8.8"
+MIN_OK=1
+DOWN_WINDOW_SECONDS=180    # 3 minutes
+CHECK_INTERVAL=5
+BOOT_GRACE=60
+```
+
+**Testing/Development**:
+```bash
+DRY_RUN=1
+DOWN_WINDOW_SECONDS=30
+CHECK_INTERVAL=5
+```
+
+## Testing Guide
+
+### Dry-Run Testing (Recommended First Step)
+
+Test the watchdog without actually rebooting your system:
+
+```bash
+# Enable dry-run mode
+sudo nano /etc/default/netwatch-agent
+# Set: DRY_RUN=1
+
+# Restart to apply
+sudo systemctl restart netwatch-agent
+
+# Watch the logs
+sudo journalctl -u netwatch-agent -f
+```
+
+You'll see log messages like `DRY_RUN: would reboot now` when the threshold is met.
+
+### Smoke Test
+
+Run the automated smoke test to verify behavior with unreachable targets:
+
+```bash
+cd tests/
+sudo ./smoke-test.sh
+```
+
+Expected output:
+- Service starts successfully
+- Detects WAN down within 8-10 seconds (using test IPs)
+- Logs "would reboot now" message
+- No actual reboot occurs
+
+### Manual Integration Test
+
+Test on a VM or non-critical system:
+
+1. **Set short timings for faster testing**:
+   ```bash
+   sudo nano /etc/default/netwatch-agent
+   ```
+   ```bash
+   DOWN_WINDOW_SECONDS=60    # 1 minute for testing
+   CHECK_INTERVAL=5
+   DRY_RUN=0                 # Actual reboot!
+   ```
+
+2. **Simulate WAN outage** using iptables:
+   ```bash
+   # Block ICMP to test targets
+   sudo iptables -I OUTPUT -p icmp -d 1.1.1.1 -j DROP
+   sudo iptables -I OUTPUT -p icmp -d 8.8.8.8 -j DROP
+   sudo iptables -I OUTPUT -p icmp -d 9.9.9.9 -j DROP
+   ```
+
+3. **Verify behavior**:
+   ```bash
+   sudo journalctl -u netwatch-agent -f
+   ```
+   - Should see "WAN appears down; starting timer."
+   - After ~60 seconds: "Threshold met; rebooting."
+   - System reboots
+
+4. **Test recovery** (restore connectivity before reboot):
+   ```bash
+   sudo iptables -D OUTPUT -p icmp -d 1.1.1.1 -j DROP
+   ```
+   - Should see "WAN reachable again after Xs"
+   - Timer resets, no reboot
+
+### Verifying Determinism
+
+The watchdog should trigger within ±5% of `DOWN_WINDOW_SECONDS`:
+
+- 600s window → trigger between 570-630s
+- 180s window → trigger between 171-189s
+
+Check logs with timestamps:
+```bash
+sudo journalctl -u netwatch-agent -o short-iso | grep -E "(appears down|rebooting)"
+```
+
+## Operations Playbook
+
+### Daily Operations
+
+**View live status**:
+```bash
+sudo systemctl status netwatch-agent
+```
+
+**Follow logs**:
+```bash
+sudo journalctl -u netwatch-agent -f
+```
+
+**Check recent activity**:
+```bash
+sudo journalctl -u netwatch-agent --since "1 hour ago"
+```
+
+### Pause and Resume
+
+**Pause watchdog** (e.g., during maintenance):
 ```bash
 sudo touch /etc/netwatch-agent.disable
+```
+
+The service continues running but takes no action. Logs show:
+```
+Disabled via /etc/netwatch-agent.disable
 ```
 
 **Resume watchdog**:
@@ -54,24 +211,198 @@ sudo touch /etc/netwatch-agent.disable
 sudo rm /etc/netwatch-agent.disable
 ```
 
-**Change configuration**:
+Monitoring resumes immediately on next loop.
+
+### Tuning Configuration
+
+**Change settings**:
 ```bash
 sudo nano /etc/default/netwatch-agent
 sudo systemctl restart netwatch-agent
 ```
 
-**Uninstall**:
+**Common tuning scenarios**:
+
+- **Flaky connection**: Increase `MIN_OK` and add more `TARGETS`
+- **Faster response**: Reduce `DOWN_WINDOW_SECONDS` and `CHECK_INTERVAL`
+- **Prevent false positives**: Increase `DOWN_WINDOW_SECONDS`
+- **After infrastructure change**: Update `TARGETS` to match new network
+
+### Uninstall
+
 ```bash
 sudo ./scripts/uninstall.sh
 ```
 
-## Testing
+Removes service, config, and script. Optionally backs up config with `.bak` suffix.
 
-Run the smoke test to verify behavior without rebooting:
+## Troubleshooting
 
+### Service Not Running
+
+**Check status**:
 ```bash
-cd tests/
-sudo ./smoke-test.sh
+sudo systemctl status netwatch-agent
+```
+
+**If failed to start**:
+```bash
+# View full error logs
+sudo journalctl -u netwatch-agent -n 50 --no-pager
+
+# Check config syntax
+sudo bash -n /usr/local/sbin/netwatch-agent.sh
+
+# Verify config file exists
+ls -l /etc/default/netwatch-agent
+```
+
+**Common causes**:
+- Missing config file → reinstall or create from template
+- Syntax error in config → check for quotes, equals signs
+- Missing dependencies → ensure `ping` is available
+
+### Watchdog Not Rebooting During Outage
+
+**Check if dry-run is enabled**:
+```bash
+grep DRY_RUN /etc/default/netwatch-agent
+```
+If `DRY_RUN=1`, the watchdog only logs decisions. Set to `0` for actual reboots.
+
+**Check if disabled**:
+```bash
+ls -l /etc/netwatch-agent.disable
+```
+Remove the file to re-enable: `sudo rm /etc/netwatch-agent.disable`
+
+**Check cooldown status**:
+```bash
+sudo journalctl -u netwatch-agent | grep -i cooldown
+```
+If "Cooldown active" appears, the system recently rebooted and the cooldown timer is preventing another reboot.
+
+**Verify targets are actually unreachable**:
+```bash
+ping -c 3 1.1.1.1
+ping -c 3 8.8.8.8
+```
+If targets respond, the watchdog is working correctly by NOT rebooting.
+
+### Unexpected Reboots
+
+**Check recent logs**:
+```bash
+sudo journalctl -u netwatch-agent --since "2 hours ago" | grep -E "(down|reboot)"
+```
+
+**Verify timing**:
+- Was WAN actually down for `DOWN_WINDOW_SECONDS`?
+- Check if `DOWN_WINDOW_SECONDS` is too aggressive
+
+**Increase threshold**:
+```bash
+sudo nano /etc/default/netwatch-agent
+# Increase DOWN_WINDOW_SECONDS (e.g., from 600 to 900)
+# Increase MIN_OK (e.g., from 1 to 2)
+sudo systemctl restart netwatch-agent
+```
+
+### False Positives (Transient Failures)
+
+**Add more diverse targets**:
+```bash
+sudo nano /etc/default/netwatch-agent
+```
+```bash
+TARGETS="1.1.1.1 8.8.8.8 9.9.9.9 208.67.222.222"  # Add more providers
+MIN_OK=2                                           # Require 2 to respond
+```
+
+**Increase tolerance**:
+```bash
+PING_COUNT=3              # Send 3 pings per target
+PING_TIMEOUT=2            # Wait 2 seconds
+CHECK_INTERVAL=15         # Slower checks
+DOWN_WINDOW_SECONDS=900   # Require 15min continuous outage
+```
+
+### Watchdog Triggers Too Slowly
+
+**Reduce timings** (use with caution):
+```bash
+CHECK_INTERVAL=5          # Check every 5 seconds
+DOWN_WINDOW_SECONDS=180   # 3 minute window
+```
+
+**Enable fping** for faster parallel probes:
+```bash
+sudo apt install fping
+# Verify in logs: should see "using fping"
+```
+
+### Cannot Install fping
+
+The watchdog works fine without fping using fallback ping mode. Performance difference is minimal for small target lists.
+
+To verify fallback mode:
+```bash
+sudo journalctl -u netwatch-agent | grep -i fping
+```
+
+Should not see errors, just uses `ping` in background processes.
+
+### Logs Show "Disabled via /etc/netwatch-agent.disable"
+
+This is normal if the disable file exists. Remove it to resume:
+```bash
+sudo rm /etc/netwatch-agent.disable
+```
+
+### Boot Loops After Install
+
+**This should never happen** due to `BOOT_GRACE` and `COOLDOWN_SECONDS` safety mechanisms.
+
+If experiencing boot loops:
+
+1. **Boot into recovery mode** or single-user mode
+2. **Disable the service**:
+   ```bash
+   systemctl disable netwatch-agent
+   systemctl stop netwatch-agent
+   ```
+3. **Investigate config**:
+   ```bash
+   cat /etc/default/netwatch-agent
+   ```
+4. **Likely causes**:
+   - `BOOT_GRACE=0` (should be ≥60)
+   - `DOWN_WINDOW_SECONDS` too short (should be ≥180)
+   - `COOLDOWN_SECONDS` too short (should be ≥600)
+
+5. **Fix and re-enable**:
+   ```bash
+   nano /etc/default/netwatch-agent
+   # Set safe values: BOOT_GRACE=180, DOWN_WINDOW_SECONDS=600
+   systemctl enable --now netwatch-agent
+   ```
+
+### Checking Watchdog State
+
+**View current configuration**:
+```bash
+sudo systemctl show netwatch-agent --property=Environment
+```
+
+**Check if service is healthy**:
+```bash
+sudo systemctl is-active netwatch-agent
+sudo systemctl is-enabled netwatch-agent
+```
+
+**Verify heartbeat** (if using systemd watchdog):
+```bash
+sudo journalctl -u netwatch-agent | grep -i watchdog
 ```
 
 ## Documentation
@@ -82,37 +413,127 @@ sudo ./smoke-test.sh
 
 ## Architecture
 
-Netwatch uses a simple state machine:
+### State Machine
 
-1. **Probe** multiple targets in parallel each loop
-2. **Track** continuous outage duration
-3. **Reboot** when threshold met (with safety checks)
-4. **Reset** timer on any successful probe
+Netwatch implements a simple, deterministic state machine:
 
-No flapping - only continuous outages trigger reboots.
+```
+           ┌─────────────┐
+           │   STARTUP   │
+           │ (boot grace)│
+           └──────┬──────┘
+                  │
+                  ▼
+           ┌─────────────┐
+      ┌───►│  MONITORING │◄────┐
+      │    └──────┬──────┘     │
+      │           │             │
+      │    Probe fails          │ Probe succeeds
+      │    (< MIN_OK)           │ (≥ MIN_OK)
+      │           │             │
+      │           ▼             │
+      │    ┌─────────────┐     │
+      │    │  WAN DOWN   │─────┘
+      │    │ (tracking   │  Recovery
+      │    │  duration)  │
+      │    └──────┬──────┘
+      │           │
+      │    Outage ≥ DOWN_WINDOW
+      │           │
+      │           ▼
+      │    ┌─────────────┐
+      │    │   REBOOT    │
+      │    │  (cooldown) │
+      │    └──────┬──────┘
+      │           │
+      │      Host reboots
+      │           │
+      └───────────┘
+```
+
+### Key Design Principles
+
+1. **Parallel probing**: All targets checked simultaneously (not sequentially)
+   - Uses `fping` when available for efficient batch ICMP
+   - Falls back to background `ping` processes
+   - Loop time ≈ `PING_TIMEOUT` regardless of target count
+
+2. **Wall-clock tracking**: Outage duration measured in real time
+   - `down_start` timestamp set on first failure
+   - Checked against `DOWN_WINDOW_SECONDS` threshold
+   - Any success immediately resets the timer
+
+3. **No flapping tolerance**: Only continuous outages trigger reboots
+   - Transient failures don't accumulate
+   - Single successful probe = WAN is up
+   - Prevents reboots during intermittent connectivity
+
+4. **Safety mechanisms**:
+   - **Boot grace**: Delays monitoring after boot to prevent boot loops
+   - **Cooldown**: Enforces minimum time between reboot attempts
+   - **Disable file**: Provides emergency pause without stopping service
+   - **Dry-run mode**: Allows testing without actual reboots
+
+### File Locations
+
+| Path | Purpose | Permissions |
+|------|---------|-------------|
+| `/usr/local/sbin/netwatch-agent.sh` | Main agent script | 0755 root:root |
+| `/etc/default/netwatch-agent` | Configuration file | 0640 root:root |
+| `/etc/systemd/system/netwatch-agent.service` | systemd unit | 0644 root:root |
+| `/etc/netwatch-agent.disable` | Disable flag (optional) | any |
+| `/run/netwatch-agent/` | Runtime state (volatile) | 0755 root:root |
 
 ## Requirements
 
 **Runtime**:
-- Debian/Proxmox with systemd
+- Debian/Proxmox with systemd 219+
 - Bash 4.0+
-- `ping` (always present)
-- `fping` (recommended, optional)
+- `ping` (always present in coreutils)
+- `fping` (recommended, optional - provides faster parallel probes)
+- `logger` for syslog/journald integration
+- Root privileges (required for reboot capability)
 
 **Development**:
-- shellcheck (linting)
-- Proxmox/Debian VM (testing)
+- `shellcheck` for linting (all scripts must be shellcheck-clean)
+- Debian/Proxmox VM for integration testing
+- Git for version control
 
-## Safety
+## Hardware Watchdog (Complementary)
 
-- **Boot grace**: Wait after boot before monitoring
-- **Cooldown**: Never reboot more often than configured
-- **Disable file**: Emergency pause mechanism
-- **Dry-run**: Test without rebooting
+Netwatch protects against **network-related outages**. For protection against **kernel hangs or complete system freezes**, enable your hardware watchdog separately.
 
-## Hardware Watchdog
+### Quick Hardware Watchdog Setup
 
-For protection against kernel hangs, enable your hardware watchdog separately. See [docs/hardware-watchdog.md](docs/hardware-watchdog.md).
+Most Proxmox/server hardware has a built-in hardware watchdog timer (e.g., Intel iTCO_wdt):
+
+1. **Load the kernel module**:
+   ```bash
+   sudo modprobe iTCO_wdt
+   echo "iTCO_wdt" | sudo tee -a /etc/modules
+   ```
+
+2. **Install watchdog daemon**:
+   ```bash
+   sudo apt install watchdog
+   ```
+
+3. **Configure** `/etc/watchdog.conf`:
+   ```bash
+   watchdog-device = /dev/watchdog
+   max-load-1 = 24
+   ```
+
+4. **Enable and start**:
+   ```bash
+   sudo systemctl enable --now watchdog
+   ```
+
+The hardware watchdog and Netwatch work together:
+- **Netwatch**: Handles WAN outages, reboots when internet is lost
+- **Hardware watchdog**: Handles kernel panics, reboots when system hangs
+
+Both are recommended for production Proxmox hosts.
 
 ## License
 
@@ -120,18 +541,50 @@ MIT License - See [LICENSE](LICENSE) for details.
 
 ## Contributing
 
-This project follows the specification in [AGENTS.md](AGENTS.md). All code must be shellcheck-clean.
+This project follows the specification in [AGENTS.md](AGENTS.md).
 
-## Status
+### Development Standards
 
-**Current Version**: v0.1.0-dev (Phase 1 complete)
-**Status**: Core agent implemented, installers pending
-**Next Release**: v0.2.0 (Phase 2-3: Installers + testing)
-**Target**: Production-ready v1.0.0
+- All shell scripts must be **shellcheck-clean** (no warnings or errors)
+- Use strict bash options: `set -Eeuo pipefail`
+- Absolute paths for all binaries
+- Comprehensive logging for all state transitions
+- Follow existing code style and conventions
+
+### Testing Requirements
+
+Before submitting changes:
+
+1. Run `shellcheck -x` on all modified scripts
+2. Execute the smoke test suite
+3. Test on a Proxmox/Debian VM with both fping and fallback modes
+4. Verify dry-run mode works correctly
+5. Update documentation and CHANGELOG
+
+## Project Status
+
+| Component | Status | Version |
+|-----------|--------|---------|
+| Core Agent | Complete | v0.1.0 |
+| Systemd Integration | Complete | v0.1.0 |
+| Installers | Complete | v0.1.0 |
+| Unit Tests | Complete | v0.1.0 |
+| Documentation | Complete | v0.1.0 |
+
+**Current Version**: v0.1.0
+**Stability**: Production-ready
+**Next Planned**: Future extensions (see [GAMEPLAN.md](GAMEPLAN.md) Phase 6)
 
 See [CHANGELOG.md](CHANGELOG.md) for detailed version history.
+
+## Support
+
+- **Issues**: Report bugs via GitHub Issues
+- **Questions**: See [Troubleshooting](#troubleshooting) section above
+- **Documentation**: [AGENTS.md](AGENTS.md) is the authoritative technical spec
 
 ---
 
 **Maintained by**: Netwatch Contributors
 **Source of Truth**: [AGENTS.md](AGENTS.md)
+**Last Updated**: 2025-12-08
