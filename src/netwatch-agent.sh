@@ -429,20 +429,26 @@ probe_icmp() {
       fi
     done <<<"$output"
 
-    # If fping reported zero successes, log why and fall back to ping once
+    # If fping reported zero successes, log why and optionally fall back
     if (( fping_ok == 0 )); then
-      log "fping returned zero replies; falling back to ping fallback. fping output: ${output//$'\n'/ | }"
-      ok=0
-      local -a pids=()
-      for host in "${targets[@]}"; do
-        ("$PING_BIN" -n -q -c "$PING_COUNT" -W "$PING_TIMEOUT" "$host" >/dev/null 2>&1) &
-        pids+=($!)
-      done
-      for pid in "${pids[@]}"; do
-        if wait "$pid"; then
-          ((ok++))
-        fi
-      done
+      log "fping returned zero replies (USE_FPING=${USE_FPING:-auto})"
+      # If fping is required (USE_FPING=yes), treat as hard failure without fallback
+      if [[ "${USE_FPING:-auto}" == "yes" ]]; then
+        ok=0
+      else
+        log "fping returned zero replies; falling back to ping fallback. fping output: ${output//$'\n'/ | }"
+        ok=0
+        local -a pids=()
+        for host in "${targets[@]}"; do
+          ("$PING_BIN" -n -q -c "$PING_COUNT" -W "$PING_TIMEOUT" "$host" >/dev/null 2>&1) &
+          pids+=($!)
+        done
+        for pid in "${pids[@]}"; do
+          if wait "$pid"; then
+            ((ok++))
+          fi
+        done
+      fi
     fi
   else
     # Fallback: parallel background pings
