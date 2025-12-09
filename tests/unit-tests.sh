@@ -10,6 +10,20 @@
 
 set -Eeuo pipefail
 
+# Absolute paths for binaries (security requirement)
+MKTEMP="/usr/bin/mktemp"
+RM="/usr/bin/rm"
+CHMOD="/usr/bin/chmod"
+CAT="/usr/bin/cat"
+
+# Verify required binaries exist
+for cmd in "$MKTEMP" "$RM" "$CHMOD" "$CAT"; do
+  if [[ ! -x "$cmd" ]]; then
+    echo "ERROR: Required binary not found: $cmd" >&2
+    exit 1
+  fi
+done
+
 # Test framework state
 TESTS_RUN=0
 TESTS_PASSED=0
@@ -43,37 +57,43 @@ test_fail() {
 #
 # Mock environment setup
 #
+# Note: We create mock binaries but use absolute paths to invoke them
+# instead of manipulating PATH (security requirement)
+#
 
 setup_mock_env() {
   export MOCK_DIR
-  MOCK_DIR=$(mktemp -d)
-  export PATH="$MOCK_DIR:$PATH"
+  MOCK_DIR=$("$MKTEMP" -d)
+
+  # Export absolute paths to mock binaries for tests to use
+  export MOCK_FPING="$MOCK_DIR/fping"
+  export MOCK_PING="$MOCK_DIR/ping"
 }
 
 cleanup_mock_env() {
-  rm -rf "$MOCK_DIR"
+  "$RM" -rf "$MOCK_DIR"
 }
 
 create_mock_fping() {
   local exit_code="${1:-0}"
   local output="${2:-}"
 
-  cat > "$MOCK_DIR/fping" <<EOF
+  "$CAT" > "$MOCK_FPING" <<EOF
 #!/usr/bin/env bash
 echo "$output"
 exit $exit_code
 EOF
-  chmod +x "$MOCK_DIR/fping"
+  "$CHMOD" +x "$MOCK_FPING"
 }
 
 create_mock_ping() {
   local exit_code="${1:-0}"
 
-  cat > "$MOCK_DIR/ping" <<EOF
+  "$CAT" > "$MOCK_PING" <<EOF
 #!/usr/bin/env bash
 exit $exit_code
 EOF
-  chmod +x "$MOCK_DIR/ping"
+  "$CHMOD" +x "$MOCK_PING"
 }
 
 #
@@ -102,10 +122,10 @@ test_fping_all_targets_up() {
   local -a targets
   read -ra targets <<< "$TARGETS"
 
-  if [[ -x "$MOCK_DIR/fping" ]]; then
+  if [[ -x "$MOCK_FPING" ]]; then
     local timeout_ms=$((PING_TIMEOUT * 1000))
     local output
-    output=$("$MOCK_DIR/fping" -c "$PING_COUNT" -t "$timeout_ms" -q "${targets[@]}" 2>&1 || true)
+    output=$("$MOCK_FPING" -c "$PING_COUNT" -t "$timeout_ms" -q "${targets[@]}" 2>&1 || true)
 
     while IFS= read -r line; do
       [[ "$line" == *"xmt/rcv/%loss"* ]] || continue
@@ -147,10 +167,10 @@ test_fping_partial_failure() {
   local -a targets
   read -ra targets <<< "$TARGETS"
 
-  if [[ -x "$MOCK_DIR/fping" ]]; then
+  if [[ -x "$MOCK_FPING" ]]; then
     local timeout_ms=$((PING_TIMEOUT * 1000))
     local output
-    output=$("$MOCK_DIR/fping" -c "$PING_COUNT" -t "$timeout_ms" -q "${targets[@]}" 2>&1 || true)
+    output=$("$MOCK_FPING" -c "$PING_COUNT" -t "$timeout_ms" -q "${targets[@]}" 2>&1 || true)
 
     while IFS= read -r line; do
       [[ "$line" == *"xmt/rcv/%loss"* ]] || continue
@@ -192,10 +212,10 @@ test_fping_all_targets_down() {
   local -a targets
   read -ra targets <<< "$TARGETS"
 
-  if [[ -x "$MOCK_DIR/fping" ]]; then
+  if [[ -x "$MOCK_FPING" ]]; then
     local timeout_ms=$((PING_TIMEOUT * 1000))
     local output
-    output=$("$MOCK_DIR/fping" -c "$PING_COUNT" -t "$timeout_ms" -q "${targets[@]}" 2>&1 || true)
+    output=$("$MOCK_FPING" -c "$PING_COUNT" -t "$timeout_ms" -q "${targets[@]}" 2>&1 || true)
 
     while IFS= read -r line; do
       [[ "$line" == *"xmt/rcv/%loss"* ]] || continue
@@ -237,7 +257,7 @@ test_ping_fallback_all_up() {
   # Simulate fallback ping mode
   local -a pids=()
   for host in "${targets[@]}"; do
-    ("$MOCK_DIR/ping" -n -q -c "$PING_COUNT" -W "$PING_TIMEOUT" "$host" >/dev/null 2>&1) &
+    ("$MOCK_PING" -n -q -c "$PING_COUNT" -W "$PING_TIMEOUT" "$host" >/dev/null 2>&1) &
     pids+=($!)
   done
 
@@ -314,10 +334,10 @@ test_min_ok_threshold() {
   local -a targets
   read -ra targets <<< "$TARGETS"
 
-  if [[ -x "$MOCK_DIR/fping" ]]; then
+  if [[ -x "$MOCK_FPING" ]]; then
     local timeout_ms=$((PING_TIMEOUT * 1000))
     local output
-    output=$("$MOCK_DIR/fping" -c "$PING_COUNT" -t "$timeout_ms" -q "${targets[@]}" 2>&1 || true)
+    output=$("$MOCK_FPING" -c "$PING_COUNT" -t "$timeout_ms" -q "${targets[@]}" 2>&1 || true)
 
     while IFS= read -r line; do
       [[ "$line" == *"xmt/rcv/%loss"* ]] || continue

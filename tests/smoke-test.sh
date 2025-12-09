@@ -14,6 +14,21 @@
 
 set -Eeuo pipefail
 
+# Absolute paths for all binaries (security requirement)
+TIMEOUT="/usr/bin/timeout"
+BASH="/usr/bin/bash"
+GREP="/usr/bin/grep"
+RM="/usr/bin/rm"
+TOUCH="/usr/bin/touch"
+
+# Verify required binaries exist
+for cmd in "$TIMEOUT" "$BASH" "$GREP" "$RM" "$TOUCH"; do
+  if [[ ! -x "$cmd" ]]; then
+    echo "ERROR: Required binary not found: $cmd" >&2
+    exit 1
+  fi
+done
+
 # Colors
 GREEN='\033[0;32m'
 RED='\033[0;31m'
@@ -53,13 +68,13 @@ run_agent() {
   local expected_pattern="${2:-}"
 
   if $VERBOSE; then
-    timeout "$timeout_sec" bash "$AGENT_SCRIPT" 2>&1 | tee /tmp/smoke-test-output-$$.log
+    "$TIMEOUT" "$timeout_sec" "$BASH" "$AGENT_SCRIPT" 2>&1 | tee /tmp/smoke-test-output-$$.log
   else
-    timeout "$timeout_sec" bash "$AGENT_SCRIPT" > /tmp/smoke-test-output-$$.log 2>&1 || true
+    "$TIMEOUT" "$timeout_sec" "$BASH" "$AGENT_SCRIPT" > /tmp/smoke-test-output-$$.log 2>&1 || true
   fi
 
   if [[ -n "$expected_pattern" ]]; then
-    if grep -q "$expected_pattern" /tmp/smoke-test-output-$$.log; then
+    if "$GREP" -q "$expected_pattern" /tmp/smoke-test-output-$$.log; then
       return 0
     else
       return 1
@@ -68,8 +83,8 @@ run_agent() {
 }
 
 cleanup() {
-  rm -f /tmp/smoke-test-output-$$.log
-  rm -f /tmp/netwatch-smoke-test-disable-$$
+  "$RM" -f /tmp/smoke-test-output-$$.log
+  "$RM" -f /tmp/netwatch-smoke-test-disable-$$
 }
 
 trap cleanup EXIT
@@ -89,7 +104,7 @@ if [[ ! -f "$AGENT_SCRIPT" ]]; then
 fi
 
 echo "[Preflight] Checking bash syntax..."
-if bash -n "$AGENT_SCRIPT"; then
+if "$BASH" -n "$AGENT_SCRIPT"; then
   echo -e "${GREEN}✓${NC} Syntax OK"
 else
   echo -e "${RED}✗${NC} Syntax errors found"
@@ -134,8 +149,8 @@ export DOWN_WINDOW_SECONDS=30
 
 if run_agent 5s ""; then
   # Check that we started monitoring but didn't reboot
-  if grep -q "Starting WAN watchdog" /tmp/smoke-test-output-$$.log && \
-     ! grep -q "would reboot" /tmp/smoke-test-output-$$.log; then
+  if "$GREP" -q "Starting WAN watchdog" /tmp/smoke-test-output-$$.log && \
+     ! "$GREP" -q "would reboot" /tmp/smoke-test-output-$$.log; then
     log_pass
   else
     log_fail "Unexpected reboot with reachable target"
@@ -156,11 +171,11 @@ export DOWN_WINDOW_SECONDS=5
 export DISABLE_FILE="/tmp/netwatch-smoke-test-disable-$$"
 
 # Create disable file
-touch "$DISABLE_FILE"
+"$TOUCH" "$DISABLE_FILE"
 
 if run_agent 8s ""; then
-  if grep -q "Watchdog disabled" /tmp/smoke-test-output-$$.log && \
-     ! grep -q "would reboot" /tmp/smoke-test-output-$$.log; then
+  if "$GREP" -q "Watchdog disabled" /tmp/smoke-test-output-$$.log && \
+     ! "$GREP" -q "would reboot" /tmp/smoke-test-output-$$.log; then
     log_pass
   else
     log_fail "Disable file not respected"
@@ -170,7 +185,7 @@ else
   log_pass
 fi
 
-rm -f "$DISABLE_FILE"
+"$RM" -f "$DISABLE_FILE"
 
 #
 # Test 4: Boot grace period
@@ -187,7 +202,7 @@ export DISABLE_FILE="/tmp/netwatch-smoke-test-disable-$$.nonexistent"
 
 if run_agent 3s ""; then
   # Check if either boot grace message appears OR normal startup (uptime > grace)
-  if grep -q -E "(Boot grace|Starting WAN watchdog)" /tmp/smoke-test-output-$$.log; then
+  if "$GREP" -q -E "(Boot grace|Starting WAN watchdog)" /tmp/smoke-test-output-$$.log; then
     log_pass
   else
     log_fail "Expected boot grace or startup message"
@@ -210,7 +225,7 @@ export DOWN_WINDOW_SECONDS=5
 
 if run_agent 12s ""; then
   # Should trigger reboot since only 1/3 targets reachable but need 2
-  if grep -q "would reboot" /tmp/smoke-test-output-$$.log; then
+  if "$GREP" -q "would reboot" /tmp/smoke-test-output-$$.log; then
     log_pass
   else
     log_fail "Expected reboot with insufficient targets"
@@ -232,7 +247,7 @@ export USE_FPING="no"  # Force ping fallback
 export DOWN_WINDOW_SECONDS=30
 
 if run_agent 5s ""; then
-  if grep -q "Starting WAN watchdog" /tmp/smoke-test-output-$$.log; then
+  if "$GREP" -q "Starting WAN watchdog" /tmp/smoke-test-output-$$.log; then
     log_pass
   else
     log_fail "Ping fallback failed to start"
