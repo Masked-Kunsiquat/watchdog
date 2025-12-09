@@ -7,9 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Planned for Future Releases
+- Optional .deb packaging (Phase 5.3)
+- HTTP/TCP layer 7 health checks (Phase 6)
+- Per-interface routing table awareness (Phase 6)
+- Prometheus metrics exporter (Phase 6)
+- Web dashboard for multi-host monitoring (Phase 6)
+
+## [v0.5.0] - 2025-12-09
+
+**Webhook Notifications** - External alerting and metrics reporting
+
+This release adds comprehensive webhook support for external notifications, enabling integration with Discord, ntfy, Gotify, Notifiarr, Apprise, and other webhook-compatible services.
+
 ### Added
 
-**Webhook Notifications**:
+**Webhook System**:
 - Flexible webhook system for external notifications (Discord, ntfy, Gotify, Notifiarr, Apprise, etc.)
 - Event-based notifications: `down`, `recovery`, `reboot`, `startup`, `health`
 - Custom templating with variable substitution (15+ variables: `{EVENT}`, `{MESSAGE}`, `{HOSTNAME}`, `{TIMESTAMP}`, `{DURATION}`, `{UPTIME}`, `{TOTAL_REBOOTS}`, etc.)
@@ -23,12 +36,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Test script (`scripts/test-webhook.sh`) for on-demand notification testing
 - Examples for 5+ popular notification services in config template
 
-### Planned for Future Releases
-- Optional .deb packaging (Phase 5.3)
-- HTTP/TCP layer 7 health checks (Phase 6)
-- Per-interface routing table awareness (Phase 6)
-- Prometheus metrics exporter (Phase 6)
-- Web dashboard for multi-host monitoring (Phase 6)
+### Changed
+- Updated version roadmap to avoid conflicts with existing releases
+- All binaries now use absolute paths for security hardening consistency
 
 ## [v0.4.0-rc1] - 2025-12-08
 
@@ -205,6 +215,7 @@ Project bootstrap and foundation (Phase 0).
 - **v0.2.0-alpha** (2025-12-08): Installers and systemd integration (Phases 2-3)
 - **v0.3.0-beta** (2025-12-08): Testing suite and QA (Phase 4)
 - **v0.4.0-rc1** (2025-12-08): Documentation and polish (Phase 5) ✓
+- **v0.5.0** (2025-12-09): Webhook notifications ✓
 
 ## Semantic Versioning
 
