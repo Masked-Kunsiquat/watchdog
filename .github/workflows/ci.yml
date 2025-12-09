@@ -204,7 +204,7 @@ jobs:
           DRY_RUN=1
           EOF
 
-          # Try to restart service - should fail with clear error
+          # Restart to reload new config (idempotent and matches HTTP test) - should fail with clear error
           if $SUDO systemctl restart netwatch-agent 2>&1; then
             sleep 2
             # Check for error message in logs
@@ -236,7 +236,7 @@ jobs:
           DRY_RUN=1
           EOF
 
-          # Try to start service - should fail with clear error
+          # Restart to reload new config (consistent with TCP test) - should fail with clear error
           if $SUDO systemctl restart netwatch-agent 2>&1; then
             sleep 2
             # Check for error message in logs
