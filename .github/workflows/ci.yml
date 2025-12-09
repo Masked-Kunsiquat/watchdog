@@ -297,29 +297,39 @@ jobs:
 
       - name: Test fresh install
         run: |
-          sudo ./scripts/install.sh
+          SUDO=""
+          if [ "$(id -u)" -ne 0 ]; then
+            if command -v sudo >/dev/null 2>&1; then SUDO="sudo"; else echo "ERROR: need root privileges or sudo"; exit 1; fi
+          fi
+
+          $SUDO ./scripts/install.sh
 
           # Verify files exist
-          test -f /usr/local/sbin/netwatch-agent.sh
-          test -f /etc/default/netwatch-agent
-          test -f /etc/systemd/system/netwatch-agent.service
+          $SUDO test -f /usr/local/sbin/netwatch-agent.sh
+          $SUDO test -f /etc/default/netwatch-agent
+          $SUDO test -f /etc/systemd/system/netwatch-agent.service
 
           # Verify service is enabled and running
-          sudo systemctl is-enabled netwatch-agent
-          sudo systemctl is-active netwatch-agent
+          $SUDO systemctl is-enabled netwatch-agent
+          $SUDO systemctl is-active netwatch-agent
 
           echo "✓ Fresh install successful"
 
       - name: Test upgrade (reinstall)
         run: |
+          SUDO=""
+          if [ "$(id -u)" -ne 0 ]; then
+            if command -v sudo >/dev/null 2>&1; then SUDO="sudo"; else echo "ERROR: need root privileges or sudo"; exit 1; fi
+          fi
+
           # Modify config to ensure preservation
-          echo "# Test comment" | sudo tee -a /etc/default/netwatch-agent
+          echo "# Test comment" | $SUDO tee -a /etc/default/netwatch-agent
 
           # Reinstall
-          sudo ./scripts/install.sh
+          $SUDO ./scripts/install.sh
 
           # Verify config was preserved
-          if ! grep "Test comment" /etc/default/netwatch-agent; then
+          if ! $SUDO grep "Test comment" /etc/default/netwatch-agent; then
             echo "ERROR: Config was not preserved during upgrade"
             exit 1
           fi
@@ -328,22 +338,27 @@ jobs:
 
       - name: Test uninstall
         run: |
-          sudo ./scripts/uninstall.sh --keep-config
+          SUDO=""
+          if [ "$(id -u)" -ne 0 ]; then
+            if command -v sudo >/dev/null 2>&1; then SUDO="sudo"; else echo "ERROR: need root privileges or sudo"; exit 1; fi
+          fi
+
+          $SUDO ./scripts/uninstall.sh --keep-config
 
           # Verify service is stopped and disabled
-          if sudo systemctl is-active netwatch-agent 2>/dev/null; then
+          if $SUDO systemctl is-active netwatch-agent 2>/dev/null; then
             echo "ERROR: Service still running after uninstall"
             exit 1
           fi
 
           # Verify files removed
-          if test -f /usr/local/sbin/netwatch-agent.sh; then
+          if $SUDO test -f /usr/local/sbin/netwatch-agent.sh; then
             echo "ERROR: Agent script not removed"
             exit 1
           fi
 
           # Verify config was preserved (--keep-config flag)
-          if ! test -f /etc/default/netwatch-agent; then
+          if ! $SUDO test -f /etc/default/netwatch-agent; then
             echo "ERROR: Config was removed despite --keep-config"
             exit 1
           fi
