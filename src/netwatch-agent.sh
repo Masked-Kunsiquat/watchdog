@@ -60,9 +60,14 @@ METRICS_FILE="$STATE_DIR/metrics.dat"
 
 # Log a message to syslog/journald (fallback to stderr if logger unavailable)
 log() {
+  # Optionally mirror logs to stderr for test harnesses (LOG_TO_STDERR=1)
+  if [[ "${LOG_TO_STDERR:-0}" == "1" ]]; then
+    echo "[$(/usr/bin/date '+%Y-%m-%d %H:%M:%S')] $TAG: $*" >&2
+  fi
+
   if [[ -x /usr/bin/logger ]]; then
-    /usr/bin/logger -t "$TAG" -- "$*"
-  else
+    /usr/bin/logger -t "$TAG" -- "$*" || true
+  elif [[ "${LOG_TO_STDERR:-0}" != "1" ]]; then
     echo "[$(/usr/bin/date '+%Y-%m-%d %H:%M:%S')] $TAG: $*" >&2
   fi
 }
@@ -493,8 +498,8 @@ case "$HEALTH_CHECK_MODE" in
     ;;
 esac
 
-# Signal systemd that we're ready (if systemd-notify is available)
-if [[ -x /usr/bin/systemd-notify ]]; then
+# Signal systemd that we're ready (if systemd-notify is available and socket is set)
+if [[ -x /usr/bin/systemd-notify ]] && [[ -n "${NOTIFY_SOCKET:-}" ]]; then
   /usr/bin/systemd-notify --ready || true
 fi
 
@@ -610,8 +615,8 @@ while true; do
   fi
 
   # Send watchdog heartbeat to systemd (if configured)
-  if [[ -x /usr/bin/systemd-notify ]]; then
-    /usr/bin/systemd-notify --watchdog || true
+  if [[ -x /usr/bin/systemd-notify ]] && [[ -n "${NOTIFY_SOCKET:-}" ]]; then
+    /usr/bin/systemd-notify WATCHDOG=1 || true
   fi
 
   # Sleep until next check

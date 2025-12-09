@@ -41,6 +41,9 @@ AGENT_SCRIPT="$SCRIPT_DIR/../src/netwatch-agent.sh"
 VERBOSE=false
 [[ "${1:-}" == "--verbose" ]] && VERBOSE=true
 
+# Mirror agent logs to stderr so grep can see them in this harness
+export LOG_TO_STDERR=1
+
 TESTS_RUN=0
 TESTS_PASSED=0
 TESTS_FAILED=0
@@ -55,12 +58,12 @@ log_test() {
 
 log_pass() {
   echo -e "${GREEN}PASS${NC}"
-  ((TESTS_PASSED++))
+  ((++TESTS_PASSED)) || true
 }
 
 log_fail() {
   echo -e "${RED}FAIL${NC} - $*"
-  ((TESTS_FAILED++))
+  ((++TESTS_FAILED)) || true
 }
 
 run_agent() {
