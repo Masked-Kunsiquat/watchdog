@@ -216,8 +216,9 @@ This project follows [Semantic Versioning](https://semver.org/):
 
 ### Future Version Roadmap
 
-- **v0.2.0**: Optional .deb packaging, enhanced installation experience
-- **v0.3.0**: Advanced monitoring features (HTTP/TCP checks)
+- **v0.5.0**: Webhook notifications (current unreleased work)
+- **v0.6.0**: Optional .deb packaging, enhanced installation experience
+- **v0.7.0**: Advanced monitoring features (HTTP/TCP checks)
 - **v1.0.0**: Long-term support release with production hardening
 
 ---
