@@ -204,8 +204,8 @@ jobs:
           DRY_RUN=1
           EOF
 
-          # Try to start service - should fail with clear error
-          if $SUDO systemctl start netwatch-agent 2>&1; then
+          # Try to restart service - should fail with clear error
+          if $SUDO systemctl restart netwatch-agent 2>&1; then
             sleep 2
             # Check for error message in logs
             if $SUDO journalctl -u netwatch-agent --no-pager | grep -i "netcat.*not found"; then

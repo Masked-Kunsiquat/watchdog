@@ -485,7 +485,7 @@ case "$HEALTH_CHECK_MODE" in
     # TCP requires netcat
     log "Health check mode: TCP (netcat)"
     if ! [[ -x /bin/nc ]] && ! [[ -x /usr/bin/nc ]]; then
-      log "FATAL: TCP mode requires netcat (nc) - install with: apt install netcat-openbsd"
+      log "FATAL: netcat (nc) not found - TCP mode requires netcat (install netcat-openbsd)"
       exit 1
     fi
     ;;
@@ -493,7 +493,7 @@ case "$HEALTH_CHECK_MODE" in
     # HTTP requires curl
     log "Health check mode: HTTP/HTTPS (curl)"
     if ! [[ -x /usr/bin/curl ]]; then
-      log "FATAL: HTTP mode requires curl - install with: apt install curl"
+      log "FATAL: curl not found - HTTP mode requires curl (install with: apt install curl)"
       exit 1
     fi
     ;;
