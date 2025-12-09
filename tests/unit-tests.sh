@@ -10,19 +10,42 @@
 
 set -Eeuo pipefail
 
-# Absolute paths for binaries (security requirement)
-MKTEMP="/usr/bin/mktemp"
-RM="/usr/bin/rm"
-CHMOD="/usr/bin/chmod"
-CAT="/usr/bin/cat"
+# Find binaries (prefer /usr/bin, fallback to /bin)
+if [[ -x /usr/bin/mktemp ]]; then
+  MKTEMP="/usr/bin/mktemp"
+elif [[ -x /bin/mktemp ]]; then
+  MKTEMP="/bin/mktemp"
+else
+  echo "ERROR: mktemp not found" >&2
+  exit 1
+fi
 
-# Verify required binaries exist
-for cmd in "$MKTEMP" "$RM" "$CHMOD" "$CAT"; do
-  if [[ ! -x "$cmd" ]]; then
-    echo "ERROR: Required binary not found: $cmd" >&2
-    exit 1
-  fi
-done
+if [[ -x /usr/bin/rm ]]; then
+  RM="/usr/bin/rm"
+elif [[ -x /bin/rm ]]; then
+  RM="/bin/rm"
+else
+  echo "ERROR: rm not found" >&2
+  exit 1
+fi
+
+if [[ -x /usr/bin/chmod ]]; then
+  CHMOD="/usr/bin/chmod"
+elif [[ -x /bin/chmod ]]; then
+  CHMOD="/bin/chmod"
+else
+  echo "ERROR: chmod not found" >&2
+  exit 1
+fi
+
+if [[ -x /usr/bin/cat ]]; then
+  CAT="/usr/bin/cat"
+elif [[ -x /bin/cat ]]; then
+  CAT="/bin/cat"
+else
+  echo "ERROR: cat not found" >&2
+  exit 1
+fi
 
 # Test framework state
 TESTS_RUN=0

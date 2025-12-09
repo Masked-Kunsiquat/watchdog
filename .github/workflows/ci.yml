@@ -18,7 +18,8 @@ jobs:
 
       - name: Run shellcheck on all scripts
         run: |
-          find . -type f -name "*.sh" -exec shellcheck -x {} +
+          # Run shellcheck with exclusions for known false positives
+          find . -type f -name "*.sh" -exec shellcheck -x -e SC1091 -e SC2317 {} +
 
   unit-tests:
     name: Unit Tests
@@ -29,13 +30,17 @@ jobs:
       - name: Run unit tests
         run: |
           cd tests
-          sudo bash unit-tests.sh
+          bash unit-tests.sh
 
   smoke-tests:
     name: Smoke Tests (ICMP mode)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install agent first
+        run: |
+          sudo ./scripts/install.sh
 
       - name: Run smoke tests
         run: |
