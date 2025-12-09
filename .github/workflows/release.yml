@@ -13,18 +13,34 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set version from tag
         run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+
+      - name: Verify tag is on master
+        run: |
+          if ! git branch --contains "$GITHUB_SHA" | grep -qE '(^| )master$'; then
+            echo "Tag commit is not on master; refusing to publish release assets."
+            exit 1
+          fi
 
       - name: Build tarball
         run: |
           chmod +x scripts/build-tarball.sh
           VERSION="$VERSION" ./scripts/build-tarball.sh
 
+      - name: Build deb
+        run: |
+          chmod +x scripts/build-deb.sh
+          VERSION="$VERSION" ./scripts/build-deb.sh
+
       - name: Upload release assets
         uses: softprops/action-gh-release@v1
         with:
-          files: dist/netwatch-agent_${{ env.VERSION }}.tar.gz
+          files: |
+            dist/netwatch-agent_${{ env.VERSION }}.tar.gz
+            dist/netwatch-agent_${{ env.VERSION }}_all.deb
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
