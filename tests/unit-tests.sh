@@ -64,17 +64,17 @@ NC='\033[0m'
 
 test_start() {
   echo -e "${YELLOW}TEST:${NC} $*"
-  ((TESTS_RUN++))
+  ((TESTS_RUN++)) || true
 }
 
 test_pass() {
   echo -e "${GREEN}PASS${NC}"
-  ((TESTS_PASSED++))
+  ((TESTS_PASSED++)) || true
 }
 
 test_fail() {
   echo -e "${RED}FAIL${NC} - $*"
-  ((TESTS_FAILED++))
+  ((TESTS_FAILED++)) || true
 }
 
 #
@@ -163,10 +163,10 @@ parse_fping_success_count() {
   while IFS= read -r line; do
     [[ "$line" == *"xmt/rcv/%loss"* ]] || continue
     # Extract received count (format: "host : xmt/rcv/%loss = X/Y/Z%")
-    if [[ "$line" =~ :\ ([0-9]+)/([0-9]+)/ ]]; then
+    if [[ "$line" =~ =\ ([0-9]+)/([0-9]+)/ ]]; then
       local rcv="${BASH_REMATCH[2]}"
       if (( rcv >= 1 )); then
-        ((count++))
+        ((++count))
       fi
     fi
   done <<<"$output"
@@ -315,7 +315,7 @@ test_ping_fallback_all_up() {
 
   for pid in "${pids[@]}"; do
     if wait "$pid"; then
-      ((ok++))
+      ((++ok))
     fi
   done
 
@@ -353,7 +353,7 @@ test_ping_fallback_all_down() {
 
   for pid in "${pids[@]}"; do
     if wait "$pid"; then
-      ((ok++))
+      ((++ok))
     fi
   done
 
@@ -508,7 +508,7 @@ test_tcp_all_targets_up() {
     # Count successes
     for tmp_file in "${tmp_files[@]}"; do
       if [[ -f "$tmp_file" ]] && [[ "$(<"$tmp_file")" == "ok" ]]; then
-        ((ok++))
+        ((++ok))
       fi
       "$RM" -f "$tmp_file" 2>/dev/null || true
     done
@@ -548,7 +548,7 @@ test_tcp_partial_failure() {
         local host="${BASH_REMATCH[1]}"
         local port="${BASH_REMATCH[2]}"
         if "$MOCK_NC" -z -w "$PING_TIMEOUT" "$host" "$port" >/dev/null 2>&1; then
-          ((ok++))
+          ((++ok))
         fi
       fi
     done
@@ -587,7 +587,7 @@ test_tcp_all_targets_down() {
         local host="${BASH_REMATCH[1]}"
         local port="${BASH_REMATCH[2]}"
         if "$MOCK_NC" -z -w "$PING_TIMEOUT" "$host" "$port" >/dev/null 2>&1; then
-          ((ok++))
+          ((++ok))
         fi
       fi
     done
@@ -621,7 +621,7 @@ test_tcp_invalid_target_format() {
   local valid_targets=0
   for target in "${targets[@]}"; do
     if [[ "$target" =~ ^([^:]+):([0-9]+)$ ]]; then
-      ((valid_targets++))
+      ((++valid_targets))
     fi
   done
 
@@ -689,7 +689,7 @@ test_http_all_targets_up() {
     # Count successes
     for tmp_file in "${tmp_files[@]}"; do
       if [[ -f "$tmp_file" ]] && [[ "$(<"$tmp_file")" == "ok" ]]; then
-        ((ok++))
+        ((++ok))
       fi
       "$RM" -f "$tmp_file" 2>/dev/null || true
     done
@@ -729,7 +729,7 @@ test_http_partial_failure() {
         --insecure -m "$PING_TIMEOUT" "$url" 2>/dev/null || echo "000")
 
       if [[ "$status_code" == "$HTTP_EXPECTED_CODE" ]]; then
-        ((ok++))
+        ((++ok))
       fi
     done
   fi
@@ -768,7 +768,7 @@ test_http_all_targets_down() {
         --insecure -m "$PING_TIMEOUT" "$url" 2>/dev/null || echo "000")
 
       if [[ "$status_code" == "$HTTP_EXPECTED_CODE" ]]; then
-        ((ok++))
+        ((++ok))
       fi
     done
   fi
@@ -807,7 +807,7 @@ test_http_unexpected_status_code() {
         --insecure -m "$PING_TIMEOUT" "$url" 2>/dev/null || echo "000")
 
       if [[ "$status_code" == "$HTTP_EXPECTED_CODE" ]]; then
-        ((ok++))
+        ((++ok))
       fi
     done
   fi
