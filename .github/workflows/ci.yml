@@ -94,12 +94,13 @@ jobs:
           PING_TIMEOUT=2
           CHECK_INTERVAL=5
           DOWN_WINDOW_SECONDS=30
-          BOOT_GRACE=5
+          BOOT_GRACE=0
           DRY_RUN=1
           DISABLE_FILE="/etc/netwatch-agent.disable"
           EOF
 
           # Start service and verify restart succeeded
+          START_TS=$(date -u +"%Y-%m-%d %H:%M:%S")
           if ! $SUDO systemctl restart netwatch-agent; then
             echo "ERROR: Failed to restart netwatch-agent service"
             echo "Recent journal output:"
@@ -111,15 +112,15 @@ jobs:
           sleep 10
 
           # Check logs for TCP mode activation
-          $SUDO journalctl -u netwatch-agent --no-pager | grep -i "tcp"
+          $SUDO journalctl -u netwatch-agent --no-pager --since "$START_TS" | grep -i "Health check mode: TCP"
 
           # Verify service is running
           $SUDO systemctl is-active netwatch-agent
 
           # Check that probes are succeeding (no WAN down messages)
-          if $SUDO journalctl -u netwatch-agent --no-pager | grep -i "WAN appears down"; then
+          if $SUDO journalctl -u netwatch-agent --no-pager --since "$START_TS" | grep -i "WAN appears down"; then
             echo "ERROR: TCP health checks failing on reachable targets"
-            $SUDO journalctl -u netwatch-agent --no-pager
+            $SUDO journalctl -u netwatch-agent --no-pager --since "$START_TS"
             exit 1
           fi
 
@@ -300,7 +301,7 @@ jobs:
           PING_TIMEOUT=2
           CHECK_INTERVAL=5
           DOWN_WINDOW_SECONDS=10
-          BOOT_GRACE=5
+          BOOT_GRACE=0
           USE_FPING="yes"
           DRY_RUN=1
           DISABLE_FILE="/etc/netwatch-agent.disable"
