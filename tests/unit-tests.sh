@@ -134,14 +134,13 @@ test_fping_all_targets_up() {
 8.8.8.8 : xmt/rcv/%loss = 1/1/0%
 9.9.9.9 : xmt/rcv/%loss = 1/1/0%"
 
-  # Source the probe function (extract from agent script)
+  # Test configuration
   TARGETS="1.1.1.1 8.8.8.8 9.9.9.9"
   MIN_OK=1
   PING_COUNT=1
   PING_TIMEOUT=1
-  USE_FPING="yes"
 
-  # Run probe logic inline
+  # Run fping probe logic inline
   local ok=0
   local -a targets
   read -ra targets <<< "$TARGETS"
@@ -172,12 +171,13 @@ test_fping_partial_failure() {
 8.8.8.8 : xmt/rcv/%loss = 1/0/100%
 9.9.9.9 : xmt/rcv/%loss = 1/0/100%"
 
+  # Test configuration
   TARGETS="1.1.1.1 8.8.8.8 9.9.9.9"
   MIN_OK=1
   PING_COUNT=1
   PING_TIMEOUT=1
-  USE_FPING="yes"
 
+  # Run fping probe logic inline
   local ok=0
   local -a targets
   read -ra targets <<< "$TARGETS"
@@ -208,12 +208,13 @@ test_fping_all_targets_down() {
 8.8.8.8 : xmt/rcv/%loss = 1/0/100%
 9.9.9.9 : xmt/rcv/%loss = 1/0/100%"
 
+  # Test configuration
   TARGETS="1.1.1.1 8.8.8.8 9.9.9.9"
   MIN_OK=1
   PING_COUNT=1
   PING_TIMEOUT=1
-  USE_FPING="yes"
 
+  # Run fping probe logic inline
   local ok=0
   local -a targets
   read -ra targets <<< "$TARGETS"
@@ -321,12 +322,13 @@ test_min_ok_threshold() {
 8.8.8.8 : xmt/rcv/%loss = 1/0/100%
 9.9.9.9 : xmt/rcv/%loss = 1/0/100%"
 
+  # Test configuration
   TARGETS="1.1.1.1 8.8.8.8 9.9.9.9"
   MIN_OK=2  # Require 2 targets
   PING_COUNT=1
   PING_TIMEOUT=1
-  USE_FPING="yes"
 
+  # Run fping probe logic inline
   local ok=0
   local -a targets
   read -ra targets <<< "$TARGETS"
