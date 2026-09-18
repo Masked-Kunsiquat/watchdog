@@ -38,6 +38,9 @@ DEB_PATH="$DIST_DIR/netwatch-agent_${VERSION}_all.deb"
 /usr/bin/install -m 0755 "$ROOT_DIR/scripts/netwatch-nic-remediation.sh" "$STAGE_DIR/usr/local/sbin/netwatch-nic-remediation.sh"
 /usr/bin/install -m 0755 "$ROOT_DIR/scripts/netwatch-postmortem.sh" "$STAGE_DIR/usr/local/sbin/netwatch-postmortem.sh"
 /usr/bin/install -m 0755 "$ROOT_DIR/scripts/netwatch-setup-journald.sh" "$STAGE_DIR/usr/local/sbin/netwatch-setup-journald.sh"
+/usr/bin/install -m 0755 "$ROOT_DIR/src/netwatch-digest.sh" "$STAGE_DIR/usr/local/sbin/netwatch-digest.sh"
+/usr/bin/install -m 0644 "$ROOT_DIR/config/netwatch-digest.service" "$STAGE_DIR/etc/systemd/system/netwatch-digest.service"
+/usr/bin/install -m 0644 "$ROOT_DIR/config/netwatch-digest.timer" "$STAGE_DIR/etc/systemd/system/netwatch-digest.timer"
 /usr/bin/install -m 0644 "$ROOT_DIR/LICENSE" "$STAGE_DIR/usr/share/doc/netwatch-agent/copyright"
 /usr/bin/install -m 0644 "$ROOT_DIR/README.md" "$ROOT_DIR/CHANGELOG.md" "$ROOT_DIR/VERSION" "$STAGE_DIR/usr/share/doc/netwatch-agent/"
 
@@ -76,6 +79,7 @@ if [ -x /usr/bin/systemctl ]; then
   /usr/bin/systemctl daemon-reload || true
   /usr/bin/systemctl enable --now netwatch-agent.service || true
   /usr/bin/systemctl enable --now netwatch-netprobe.timer || true
+  /usr/bin/systemctl enable --now netwatch-digest.timer || true
 fi
 exit 0
 EOF
@@ -88,6 +92,8 @@ if [ -x /usr/bin/systemctl ]; then
   # Stop the timer first so no new sample starts, then the service itself -
   # a oneshot run already in flight would otherwise keep going while its
   # files are removed underneath it.
+  /usr/bin/systemctl stop netwatch-digest.timer || true
+  /usr/bin/systemctl stop netwatch-digest.service || true
   /usr/bin/systemctl stop netwatch-netprobe.timer || true
   /usr/bin/systemctl stop netwatch-netprobe.service || true
   /usr/bin/systemctl stop netwatch-agent.service || true

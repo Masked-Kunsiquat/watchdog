@@ -32,6 +32,9 @@ NETPROBE_CONFIG="/etc/default/netwatch-netprobe"
 NETPROBE_UNIT="/etc/systemd/system/netwatch-netprobe.service"
 NETPROBE_TIMER="/etc/systemd/system/netwatch-netprobe.timer"
 NETPROBE_LOGROTATE="/etc/logrotate.d/netwatch-netprobe"
+DIGEST_SCRIPT="/usr/local/sbin/netwatch-digest.sh"
+DIGEST_UNIT="/etc/systemd/system/netwatch-digest.service"
+DIGEST_TIMER="/etc/systemd/system/netwatch-digest.timer"
 NETPROBE_LOG_DIR="/var/log/netwatch"
 
 # Source files
@@ -43,6 +46,10 @@ SRC_NETPROBE_CONFIG="$PROJECT_ROOT/config/netwatch-netprobe.conf"
 SRC_NETPROBE_UNIT="$PROJECT_ROOT/config/netwatch-netprobe.service"
 SRC_NETPROBE_TIMER="$PROJECT_ROOT/config/netwatch-netprobe.timer"
 SRC_NETPROBE_LOGROTATE="$PROJECT_ROOT/config/netwatch-netprobe.logrotate"
+SRC_DIGEST="$PROJECT_ROOT/src/netwatch-digest.sh"
+SRC_DIGEST_CONF="$PROJECT_ROOT/config/netwatch-digest.conf"
+SRC_DIGEST_UNIT="$PROJECT_ROOT/config/netwatch-digest.service"
+SRC_DIGEST_TIMER="$PROJECT_ROOT/config/netwatch-digest.timer"
 
 # Install the NIC sampler unless explicitly disabled: INSTALL_NETPROBE=0
 INSTALL_NETPROBE="${INSTALL_NETPROBE:-1}"
@@ -204,6 +211,26 @@ if [[ "$INSTALL_NETPROBE" == "1" ]] && [[ -f "$SRC_NETPROBE" ]]; then
     log_warn "/etc/logrotate.d not found - the sampler log will not be rotated"
   fi
 
+  # Daily diagnostic digest (timer-driven, independent of the agent)
+  $SUDO cp "$SRC_DIGEST" "$DIGEST_SCRIPT"
+  $SUDO chmod 0755 "$DIGEST_SCRIPT"
+  $SUDO chown root:root "$DIGEST_SCRIPT"
+
+  $SUDO cp "$SRC_DIGEST_UNIT" "$DIGEST_UNIT"
+  $SUDO chmod 0644 "$DIGEST_UNIT"
+  $SUDO chown root:root "$DIGEST_UNIT"
+
+  $SUDO cp "$SRC_DIGEST_TIMER" "$DIGEST_TIMER"
+  $SUDO chmod 0644 "$DIGEST_TIMER"
+  $SUDO chown root:root "$DIGEST_TIMER"
+
+  # Append digest settings to the sampler config on first install only, so an
+  # operator's edits are never overwritten.
+  if ! $SUDO grep -q 'DIGEST_ENABLED' "$NETPROBE_CONFIG" 2>/dev/null; then
+    log_info "Adding digest settings to $NETPROBE_CONFIG"
+    $SUDO tee -a "$NETPROBE_CONFIG" < "$SRC_DIGEST_CONF" > /dev/null
+  fi
+
   if ! command -v ethtool >/dev/null 2>&1; then
     log_warn "ethtool not found - the sampler needs it for driver counters"
     log_info "Install it with: apt-get install ethtool"
@@ -240,6 +267,11 @@ $SUDO /usr/bin/systemctl enable netwatch-agent
 if [[ "$INSTALL_NETPROBE" == "1" ]] && [[ -f "$NETPROBE_TIMER" ]]; then
   log_info "Enabling netwatch-netprobe timer"
   $SUDO /usr/bin/systemctl enable --now netwatch-netprobe.timer
+fi
+
+if [[ "$INSTALL_NETPROBE" == "1" ]] && [[ -f "$DIGEST_TIMER" ]]; then
+  log_info "Enabling netwatch-digest timer (daily summary)"
+  $SUDO /usr/bin/systemctl enable --now netwatch-digest.timer
 fi
 
 # Check if service is already running

@@ -704,18 +704,32 @@ while true; do
       CURRENT_OUTAGE=$(($(now) - DOWN_START))
 
       if (( CURRENT_OUTAGE >= DOWN_WINDOW_SECONDS )); then
-        # Threshold met - check cooldown
-        TIME_SINCE_REBOOT=$(($(now) - LAST_REBOOT))
+        # Threshold met - check cooldown.
+        #
+        # Cooldown exists to prevent reboot loops, so it only applies when a
+        # reboot could actually happen. In dry-run nothing reboots, and
+        # honouring a cooldown here would suppress the very reports dry-run is
+        # meant to produce (including any armed by an older build that set
+        # LAST_REBOOT on dry-run trips).
+        if (( DRY_RUN == 1 )); then
+          TIME_SINCE_REBOOT=$COOLDOWN_SECONDS
+        else
+          TIME_SINCE_REBOOT=$(($(now) - LAST_REBOOT))
+        fi
 
         if (( TIME_SINCE_REBOOT >= COOLDOWN_SECONDS )); then
           # Ready to reboot
-          LAST_REBOOT=$(now)
-          save_metrics
-
           if (( DRY_RUN == 1 )); then
+            # Deliberately does NOT arm the cooldown. Nothing rebooted, so
+            # suppressing the next threshold report for COOLDOWN_SECONDS would
+            # hide exactly the signal dry-run exists to surface - and because
+            # LAST_REBOOT persists across restarts, one dry-run trip would
+            # otherwise silence reporting even after a service restart.
             log "DRY_RUN: would reboot now (outage: ${CURRENT_OUTAGE}s >= ${DOWN_WINDOW_SECONDS}s)"
             send_webhook "reboot" "DRY_RUN: Would reboot after ${CURRENT_OUTAGE}s outage" "$CURRENT_OUTAGE"
           else
+            LAST_REBOOT=$(now)
+            save_metrics
             log "Reboot threshold met (outage: ${CURRENT_OUTAGE}s >= ${DOWN_WINDOW_SECONDS}s)"
             increment_metric "reboots"
             send_webhook "reboot" "Rebooting host after ${CURRENT_OUTAGE}s continuous WAN outage" "$CURRENT_OUTAGE"

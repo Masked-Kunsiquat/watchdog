@@ -602,6 +602,42 @@ journalctl -t netwatch-netprobe -p crit --no-pager      # anomalies only
 Anomalies log at `crit` so journald fsyncs immediately and the record survives a
 hard power-cycle. Skip installing it with `INSTALL_NETPROBE=0 ./scripts/install.sh`.
 
+### Daily digest
+
+A once-a-day summary so confirming a fix does not mean remembering commands:
+
+```
+**Netwatch daily digest** - 2026-09-18 21:00 EDT
+Verdict: **HOLDING** (all clear)
+
+NIC (eno1)           link=up  offloads: tso=off gso=off gro=off
+Hangs (24h)          hardware-unit-hang=0  tx-timeout=0
+Counters             tx_restart=912 (D65)  rx_missed=56  rx_crc=0
+WAN (24h)            outages=0  downtime=0s  dry-run-trips=0
+```
+
+The verdict is `HOLDING`, `ATTENTION`, or `DEGRADED` - `DEGRADED` means the
+hang returned or offloads silently re-enabled.
+
+Host identifiers are redacted by default (no IPs, no MACs, no hostname), since
+the digest usually goes to a third-party service. Set
+`DIGEST_INCLUDE_HOSTNAME=1` to include the hostname.
+
+It runs on its own timer, independent of the agent - it reports whether or not
+`DRY_RUN` is set, and `{DRYRUN_TRIPS}` counts the false positives that dry-run
+exists to surface.
+
+```bash
+systemctl start netwatch-digest.service          # send one now
+systemctl list-timers netwatch-digest            # when is the next one
+systemctl edit netwatch-digest.timer             # change the delivery time
+journalctl -t netwatch-digest --no-pager | tail  # local copy, always kept
+```
+
+Trim the message by setting `DIGEST_BODY_TEMPLATE` to a template containing
+only the `{PLACEHOLDERS}` you want - see `/etc/default/netwatch-netprobe` for
+the full list and examples.
+
 ### Persistent logging
 
 Post-mortem analysis requires a journal that survives reboots — without it

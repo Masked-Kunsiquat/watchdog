@@ -620,6 +620,216 @@ EOF
 }
 
 #
+# Regression Tests (dry-run cooldown)
+#
+
+# Cooldown prevents reboot LOOPS, so it must only apply when a reboot can
+# actually happen. In dry-run nothing reboots, so arming or honouring a
+# cooldown suppresses exactly the reports dry-run exists to produce. This
+# matters more since LAST_REBOOT began persisting across restarts: one dry-run
+# trip would otherwise silence threshold reporting for COOLDOWN_SECONDS even
+# across a service restart.
+test_dryrun_does_not_arm_cooldown() {
+  test_start "Regression: dry-run neither arms nor honours the cooldown"
+
+  if [[ ! -f "$AGENT_SCRIPT" ]]; then
+    test_fail "Agent script not found: $AGENT_SCRIPT"
+    return
+  fi
+
+  setup_mock_env
+  local persist="$MOCK_DIR/persist"
+  mkdir -p "$persist"
+
+  local boot_id=""
+  [[ -r /proc/sys/kernel/random/boot_id ]] && boot_id=$(< /proc/sys/kernel/random/boot_id)
+
+  local now_ts
+  now_ts=$(date +%s)
+
+  # A cooldown armed moments ago, as an older build would have done on a
+  # dry-run trip
+  cat > "$persist/metrics.dat" <<EOF
+TOTAL_REBOOTS=0
+TOTAL_OUTAGES=0
+TOTAL_RECOVERIES=0
+TOTAL_DOWNTIME_SECONDS=0
+LAST_HEALTH_REPORT=0
+SERVICE_START_TIME=$now_ts
+DOWN_START=-1
+LAST_REBOOT=$now_ts
+BOOT_ID=$boot_id
+TRACKING_SINCE=$now_ts
+EOF
+
+  local output
+  output=$(
+    STATE_DIR="$MOCK_DIR/run"     PERSIST_DIR="$persist"     LOG_TO_STDERR=1     TARGETS="203.0.113.1 198.51.100.1"     MIN_OK=2     BOOT_GRACE=0     PING_COUNT=1     PING_TIMEOUT=1     CHECK_INTERVAL=2     DOWN_WINDOW_SECONDS=4     COOLDOWN_SECONDS=1200     DRY_RUN=1     USE_FPING="no"     DISABLE_FILE="$MOCK_DIR/none.disable"     timeout 12 bash "$AGENT_SCRIPT" 2>&1
+  ) || true
+
+  local saved_last_reboot
+  saved_last_reboot=$(grep -E '^LAST_REBOOT=' "$persist/metrics.dat" 2>/dev/null | cut -d= -f2)
+
+  cleanup_mock_env
+
+  if ! echo "$output" | grep -q "DRY_RUN: would reboot now"; then
+    test_fail "Dry-run trip suppressed by cooldown: $(echo "$output" | grep -i cooldown | head -1)"
+  elif [[ "$saved_last_reboot" != "$now_ts" ]]; then
+    test_fail "Dry-run advanced LAST_REBOOT ($now_ts -> $saved_last_reboot)"
+  else
+    test_pass
+  fi
+}
+
+#
+# Daily Digest Tests
+#
+
+# The digest goes to a third-party service, so host identifiers must not leak.
+# IPs and MACs are never included; the hostname only with an explicit opt-in.
+test_digest_redacts_host_identifiers() {
+  test_start "Digest: redacts IPs, MACs, and hostname by default"
+
+  local digest="$SCRIPT_DIR/../src/netwatch-digest.sh"
+  if [[ ! -f "$digest" ]]; then
+    test_fail "Digest script not found: $digest"
+    return
+  fi
+
+  # The default must be redacted, and the hostname must be gated on the flag
+  if ! grep -q 'DIGEST_INCLUDE_HOSTNAME:=0' "$digest"; then
+    test_fail "DIGEST_INCLUDE_HOSTNAME does not default to 0"
+    return
+  fi
+
+  if ! grep -q 'HOST_LABEL="(redacted)"' "$digest"; then
+    test_fail "No redacted fallback for the hostname"
+    return
+  fi
+
+  # No placeholder should expose addressing information
+  if grep -qE '\{(IP|IPADDR|MAC|MACADDR)\}' "$digest"; then
+    test_fail "Digest exposes an IP or MAC placeholder"
+    return
+  fi
+
+  test_pass
+}
+
+# A custom DIGEST_BODY_TEMPLATE is the documented way to trim verbosity, so
+# every placeholder the config advertises must actually be substituted.
+test_digest_template_placeholders_substituted() {
+  test_start "Digest: documented placeholders are all substituted"
+
+  local digest="$SCRIPT_DIR/../src/netwatch-digest.sh"
+  local conf="$SCRIPT_DIR/../config/netwatch-digest.conf"
+
+  if [[ ! -f "$digest" ]] || [[ ! -f "$conf" ]]; then
+    test_fail "Digest script or config not found"
+    return
+  fi
+
+  # Placeholders advertised in the config reference block
+  local -a advertised
+  # {PLACEHOLDER} is prose in the config's explanatory text, not a real variable
+  mapfile -t advertised < <(grep -oE '\{[A-Z_]+\}' "$conf" | grep -v '^{PLACEHOLDER}$' | sort -u)
+
+  if (( ${#advertised[@]} == 0 )); then
+    test_fail "No placeholders found in the config documentation"
+    return
+  fi
+
+  local ph missing=""
+  for ph in "${advertised[@]}"; do
+    # Each must appear in the substitution function
+    if ! grep -qF "text=\"\${text//\$ph" "$digest"; then
+      local bare="${ph//[\{\}]/}"
+      if ! grep -qF "\{${bare}\}" "$digest"; then
+        missing+="$ph "
+      fi
+    fi
+  done
+
+  if [[ -z "$missing" ]]; then
+    test_pass
+  else
+    test_fail "Documented but never substituted: $missing"
+  fi
+}
+
+# The digest builds JSON by hand; unescaped quotes or backslashes in a custom
+# template would produce a malformed payload that silently fails to deliver.
+test_digest_json_escaping() {
+  test_start "Digest: JSON escaping produces valid JSON"
+
+  local digest="$SCRIPT_DIR/../src/netwatch-digest.sh"
+  if [[ ! -f "$digest" ]]; then
+    test_fail "Digest script not found: $digest"
+    return
+  fi
+
+  setup_mock_env
+  local persist="$MOCK_DIR/persist"
+  mkdir -p "$persist" "$MOCK_DIR/bin"
+
+  # Capture the payload instead of sending it
+  cat > "$MOCK_DIR/bin/curl" <<'CURLEOF'
+#!/usr/bin/env bash
+while [ $# -gt 0 ]; do
+  if [ "$1" = "-d" ]; then printf '%s' "$2" > "$CAPTURE_FILE"; fi
+  shift
+done
+exit 0
+CURLEOF
+  chmod +x "$MOCK_DIR/bin/curl"
+
+  local capture="$MOCK_DIR/payload.json"
+  local patched="$MOCK_DIR/digest.sh"
+  sed "s|/usr/bin/curl|$MOCK_DIR/bin/curl|g" "$digest" > "$patched"
+
+  # A template containing the characters that break naive JSON building
+  export CAPTURE_FILE="$capture"
+  export PERSIST_DIR="$persist"
+  export NETPROBE_IFACE="lo"
+  export WEBHOOK_ENABLED=1
+  export WEBHOOK_URL="https://example.invalid/hook"
+  export DIGEST_BODY_TEMPLATE='quote " backslash \ and {VERDICT}'
+  bash "$patched" >/dev/null 2>&1 || true
+  unset CAPTURE_FILE PERSIST_DIR NETPROBE_IFACE WEBHOOK_ENABLED WEBHOOK_URL DIGEST_BODY_TEMPLATE
+
+  # Validate the payload. Prefer a real JSON parser; fall back to asserting the
+  # escaping directly when no usable interpreter is available (the Windows
+  # dev environment has stubs that exist but do not run).
+  local result="fail"
+  if [[ -f "$capture" ]]; then
+    if python3 -c "import json; json.load(open('$capture'))" 2>/dev/null       || python -c "import json; json.load(open('$capture'))" 2>/dev/null; then
+      result="ok"
+    else
+      # The template contained a bare " and a bare backslash. Both must appear
+      # escaped in the payload for it to be valid JSON. Build the needles with
+      # printf so the escaping is unambiguous to both bash and shellcheck.
+      # \134 is the octal escape for a backslash, which avoids having to quote
+      # one inside a shell literal.
+      local bs esc_quote esc_backslash
+      bs=$(printf '\134')
+      esc_quote="${bs}\""
+      esc_backslash="${bs}${bs}"
+      if grep -qF "$esc_quote" "$capture" && grep -qF "$esc_backslash" "$capture"; then
+        result="ok"
+      fi
+    fi
+  fi
+
+  cleanup_mock_env
+
+  if [[ "$result" == "ok" ]]; then
+    test_pass
+  else
+    test_fail "Digest payload was not valid JSON with quotes/backslashes in the template"
+  fi
+}
+
+#
 # Regression Tests (corrupt persistent state)
 #
 
@@ -1305,6 +1515,10 @@ test_cooldown_enforcement
 test_boot_grace_calculation
 
 # Regression tests (errexit safety)
+test_dryrun_does_not_arm_cooldown
+test_digest_redacts_host_identifiers
+test_digest_template_placeholders_substituted
+test_digest_json_escaping
 test_corrupt_metrics_does_not_crash
 test_metrics_reject_out_of_range
 test_counter_delta_rejects_overflow
