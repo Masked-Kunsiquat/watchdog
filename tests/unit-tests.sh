@@ -620,6 +620,137 @@ EOF
 }
 
 #
+# Regression Tests (corrupt persistent state)
+#
+
+# metrics.dat is sourced, so a truncated or hand-edited file can leave a numeric
+# field holding text. Under `set -u`, (( VAR != 0 )) on a non-numeric value
+# treats the contents as a variable name and aborts: "garbage: unbound
+# variable". An unclean shutdown mid-write can produce exactly this, which would
+# leave the watchdog dead until someone noticed.
+test_corrupt_metrics_does_not_crash() {
+  test_start "Regression: corrupt metrics.dat does not kill the agent"
+
+  if [[ ! -f "$AGENT_SCRIPT" ]]; then
+    test_fail "Agent script not found: $AGENT_SCRIPT"
+    return
+  fi
+
+  setup_mock_env
+  local persist="$MOCK_DIR/persist"
+  mkdir -p "$persist"
+
+  cat > "$persist/metrics.dat" <<'CORRUPT'
+DOWN_START=garbage
+LAST_REBOOT=
+TRACKING_SINCE=notanumber
+TOTAL_DOWNTIME_SECONDS=abc
+BOOT_ID=stale
+CORRUPT
+
+  local output
+  output=$(
+    STATE_DIR="$MOCK_DIR/run" \
+    PERSIST_DIR="$persist" \
+    LOG_TO_STDERR=1 \
+    TARGETS="127.0.0.1" \
+    MIN_OK=1 \
+    BOOT_GRACE=0 \
+    CHECK_INTERVAL=1 \
+    DOWN_WINDOW_SECONDS=3600 \
+    DRY_RUN=1 \
+    USE_FPING="no" \
+    DISABLE_FILE="$MOCK_DIR/none.disable" \
+    timeout 4 bash "$AGENT_SCRIPT" 2>&1
+  ) || true
+
+  cleanup_mock_env
+
+  if echo "$output" | grep -qi "unbound variable"; then
+    test_fail "Agent died on corrupt metrics: $(echo "$output" | grep -i 'unbound' | head -1)"
+  elif echo "$output" | grep -q "Starting WAN watchdog"; then
+    test_pass
+  else
+    test_fail "Agent did not start: $(echo "$output" | head -3)"
+  fi
+}
+
+# If ethtool is briefly unavailable (package upgrade, interface down), the
+# sampler reports 0 for every counter. Persisting those placeholder zeros would
+# make the next successful sample look like a spike from 0 to the real value,
+# raising a false hang alert. The state file must carry the previous values
+# forward instead.
+test_sampler_preserves_counters_when_unreadable() {
+  test_start "Regression: unreadable counters do not reset the saved baseline"
+
+  local probe="$SCRIPT_DIR/../src/netwatch-netprobe.sh"
+  if [[ ! -f "$probe" ]]; then
+    test_fail "Sampler script not found: $probe"
+    return
+  fi
+
+  # The write must be gated on COUNTERS_READ, not write the live values blindly
+  if ! grep -q 'COUNTERS_READ' "$probe"; then
+    test_fail "Sampler does not track whether counters were actually read"
+    return
+  fi
+
+  # shellcheck disable=SC2016  # literal source text, not an expansion
+  if ! grep -q 'SAVE_TX_TIMEOUT="\$PREV_TX_TIMEOUT"' "$probe"; then
+    test_fail "Sampler does not carry previous counters forward when unreadable"
+    return
+  fi
+
+  # Deltas must also be gated, or a placeholder zero would still be compared
+  local gated
+  # shellcheck disable=SC2016  # literal source text, not an expansion
+  gated=$(grep -A6 'if (( COUNTERS_READ )); then' "$probe" | grep -c 'DELTA_TX_TIMEOUT=\$(counter_delta' || true)
+
+  if (( gated >= 1 )); then
+    test_pass
+  else
+    test_fail "Counter deltas are computed without checking COUNTERS_READ"
+  fi
+}
+
+# A corrupt state file could hold a value above INT64_MAX. Bash arithmetic is
+# 64-bit signed and wraps silently, so such a value compares as negative and
+# the sampler would report a bogus counter increase - a false crit anomaly.
+test_counter_delta_rejects_overflow() {
+  test_start "Regression: counter delta rejects out-of-range values"
+
+  local probe="$SCRIPT_DIR/../src/netwatch-netprobe.sh"
+  if [[ ! -f "$probe" ]]; then
+    test_fail "Sampler script not found: $probe"
+    return
+  fi
+
+  # Extract counter_delta and exercise it directly
+  local fn
+  fn=$(sed -n '/^counter_delta()/,/^}/p' "$probe")
+
+  if [[ -z "$fn" ]]; then
+    test_fail "Could not extract counter_delta from the sampler"
+    return
+  fi
+
+  local overflow normal reset
+  overflow=$(bash -c "set -Eeuo pipefail; $fn; counter_delta '18446744073709551615' '1'" 2>/dev/null || true)
+  normal=$(bash -c "set -Eeuo pipefail; $fn; counter_delta '5' '9'" 2>/dev/null || true)
+  reset=$(bash -c "set -Eeuo pipefail; $fn; counter_delta '9' '5'" 2>/dev/null || true)
+
+  if [[ -n "$overflow" ]]; then
+    test_fail "Out-of-range previous value produced a delta of '$overflow'"
+  elif [[ "$normal" != "4" ]]; then
+    test_fail "Normal increase 5->9 gave '$normal', expected 4"
+  elif [[ -n "$reset" ]]; then
+    test_fail "Counter reset 9->5 produced a delta of '$reset', expected none"
+  else
+    test_pass
+  fi
+}
+
+#
 # Regression Tests (errexit safety)
 #
 
@@ -1101,6 +1232,9 @@ test_cooldown_enforcement
 test_boot_grace_calculation
 
 # Regression tests (errexit safety)
+test_corrupt_metrics_does_not_crash
+test_counter_delta_rejects_overflow
+test_sampler_preserves_counters_when_unreadable
 test_resume_announces_wan_down
 test_fping_regex_matches_real_output
 test_fping_regex_all_down

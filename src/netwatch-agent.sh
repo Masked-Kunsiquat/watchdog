@@ -118,6 +118,24 @@ load_metrics() {
     . "$METRICS_FILE" 2>/dev/null || true
   fi
 
+  # The metrics file is sourced, so a truncated or hand-edited file can leave a
+  # numeric field holding non-numeric text. Every arithmetic context below runs
+  # under `set -u`, where (( VAR != 0 )) on a non-numeric value treats the
+  # contents as a variable name and aborts the script. Reset anything that is
+  # not a plain integer back to its default.
+  local field default
+  for field in TOTAL_REBOOTS TOTAL_OUTAGES TOTAL_RECOVERIES \
+               TOTAL_DOWNTIME_SECONDS LAST_HEALTH_REPORT LAST_REBOOT \
+               TRACKING_SINCE SERVICE_START_TIME DOWN_START; do
+    default=0
+    [[ "$field" == "DOWN_START" ]] && default=-1
+
+    if [[ ! "${!field}" =~ ^-?[0-9]+$ ]]; then
+      log "WARNING: $METRICS_FILE has invalid $field='${!field}'; resetting to $default"
+      printf -v "$field" '%s' "$default"
+    fi
+  done
+
   # Outage state is only meaningful within a single boot. A saved DOWN_START
   # from a previous boot would otherwise be measured against the current clock
   # and report a multi-day phantom outage, so discard it when the boot changes.

@@ -237,6 +237,12 @@ CARRIER_UP=$(read_sysfs "/sys/class/net/$IFACE/carrier_up_count" "0")
 CARRIER_DOWN=$(read_sysfs "/sys/class/net/$IFACE/carrier_down_count" "0")
 
 # --- Driver counters ---
+#
+# COUNTERS_READ distinguishes "genuinely zero" from "could not read". Without
+# it, a sample taken while ethtool is unavailable would record 0 and the next
+# successful sample would look like a spike from 0 to the real value, raising a
+# false anomaly.
+COUNTERS_READ=0
 TX_TIMEOUT=0
 TX_RESTART=0
 RX_MISSED=0
@@ -244,6 +250,7 @@ RX_CRC=0
 if (( ETHTOOL_AVAILABLE )); then
   STATS=$("$ETHTOOL_BIN" -S "$IFACE" 2>/dev/null || true)
   if [[ -n "$STATS" ]]; then
+    COUNTERS_READ=1
     TX_TIMEOUT=$(get_stat "$STATS" "tx_timeout_count")
     TX_RESTART=$(get_stat "$STATS" "tx_restart_queue")
     RX_MISSED=$(get_stat "$STATS" "rx_missed_errors")
@@ -316,18 +323,32 @@ counter_delta() {
   local current="$2"
 
   [[ -n "$previous" ]] || return 0
-  [[ "$previous" =~ ^[0-9]+$ ]] || return 0
-  [[ "$current" =~ ^[0-9]+$ ]] || return 0
+
+  # Bound the digit count as well as the character class. Bash arithmetic is
+  # 64-bit signed and wraps silently, so a corrupt state file holding a value
+  # above INT64_MAX would compare as negative and report a bogus increase.
+  # Real ethtool counters never approach this magnitude.
+  [[ "$previous" =~ ^[0-9]{1,15}$ ]] || return 0
+  [[ "$current" =~ ^[0-9]{1,15}$ ]] || return 0
 
   if (( current > previous )); then
     echo $(( current - previous ))
   fi
 }
 
-DELTA_TX_TIMEOUT=$(counter_delta "$PREV_TX_TIMEOUT" "$TX_TIMEOUT")
-DELTA_TX_RESTART=$(counter_delta "$PREV_TX_RESTART" "$TX_RESTART")
-DELTA_RX_MISSED=$(counter_delta "$PREV_RX_MISSED" "$RX_MISSED")
-DELTA_RX_CRC=$(counter_delta "$PREV_RX_CRC" "$RX_CRC")
+DELTA_TX_TIMEOUT=""
+DELTA_TX_RESTART=""
+DELTA_RX_MISSED=""
+DELTA_RX_CRC=""
+
+# Only compare when this sample actually read the counters. Comparing a real
+# previous value against a placeholder zero would report a spurious increase.
+if (( COUNTERS_READ )); then
+  DELTA_TX_TIMEOUT=$(counter_delta "$PREV_TX_TIMEOUT" "$TX_TIMEOUT")
+  DELTA_TX_RESTART=$(counter_delta "$PREV_TX_RESTART" "$TX_RESTART")
+  DELTA_RX_MISSED=$(counter_delta "$PREV_RX_MISSED" "$RX_MISSED")
+  DELTA_RX_CRC=$(counter_delta "$PREV_RX_CRC" "$RX_CRC")
+fi
 
 # --- Emit ---
 SAMPLE="iface=$IFACE operstate=$OPERSTATE carrier=$CARRIER"
@@ -393,12 +414,27 @@ fi
 log_file "$SAMPLE"
 
 # --- Persist counters for the next run's delta window ---
+# When the counters could not be read, carry the previous values forward rather
+# than storing placeholder zeros - otherwise the next successful sample would
+# compare against 0 and report the real value as a spike.
+SAVE_TX_TIMEOUT="$TX_TIMEOUT"
+SAVE_TX_RESTART="$TX_RESTART"
+SAVE_RX_MISSED="$RX_MISSED"
+SAVE_RX_CRC="$RX_CRC"
+
+if (( ! COUNTERS_READ )); then
+  SAVE_TX_TIMEOUT="$PREV_TX_TIMEOUT"
+  SAVE_TX_RESTART="$PREV_TX_RESTART"
+  SAVE_RX_MISSED="$PREV_RX_MISSED"
+  SAVE_RX_CRC="$PREV_RX_CRC"
+fi
+
 /bin/cat > "$STATE_FILE" <<EOF
 LAST_RUN=$(/usr/bin/date +%s)
-TX_TIMEOUT=$TX_TIMEOUT
-TX_RESTART=$TX_RESTART
-RX_MISSED=$RX_MISSED
-RX_CRC=$RX_CRC
+TX_TIMEOUT=$SAVE_TX_TIMEOUT
+TX_RESTART=$SAVE_TX_RESTART
+RX_MISSED=$SAVE_RX_MISSED
+RX_CRC=$SAVE_RX_CRC
 CARRIER_DOWN=$CARRIER_DOWN
 EOF
 
