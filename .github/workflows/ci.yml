@@ -337,7 +337,17 @@ jobs:
           # ICMP entirely. Probe first and only assert "no outage" when ICMP
           # genuinely works here, so this job tests the agent rather than the
           # network policy of the machine it happens to land on.
-          if $SUDO fping -c 1 -t 2000 -q 8.8.8.8 1.1.1.1 9.9.9.9 2>&1 | grep -q ' = [0-9]*/[1-9]'; then
+          #
+          # Count replying targets and compare against the MIN_OK the agent is
+          # configured with. A simple "any target replied" check would open this
+          # branch when only 1 of 3 responds, while the agent needs 2 - and would
+          # then fail the job for correctly reporting an outage.
+          AGENT_MIN_OK=2   # keep in sync with the config written above
+          REACHABLE=$($SUDO fping -c 1 -t 2000 -q 8.8.8.8 1.1.1.1 9.9.9.9 2>&1 \
+            | grep -c ' = [0-9]*/[1-9]' || true)
+          echo "Reachable targets: ${REACHABLE:-0} (agent needs MIN_OK=$AGENT_MIN_OK)"
+
+          if [ "${REACHABLE:-0}" -ge "$AGENT_MIN_OK" ]; then
             echo "ICMP is permitted on this runner; asserting probes succeed"
             if $SUDO journalctl -u netwatch-agent --no-pager --since "$START_TS" | grep -i "WAN appears down"; then
               echo "ERROR: WAN down detected on reachable targets"
@@ -346,9 +356,10 @@ jobs:
             fi
             echo "✓ probes succeeded against reachable targets"
           else
-            echo "NOTE: outbound ICMP is blocked on this runner."
-            echo "Skipping the 'probes succeed' assertion - it would test the"
-            echo "runner's network policy, not the agent. The 'using fping'"
+            echo "NOTE: only ${REACHABLE:-0} of 3 targets reachable, below MIN_OK=$AGENT_MIN_OK."
+            echo "Skipping the 'probes succeed' assertion - the agent is correct"
+            echo "to report an outage here, so asserting otherwise would test the"
+            echo "runner's network policy rather than the agent. The 'using fping'"
             echo "check above already proved fping selection works."
           fi
 
