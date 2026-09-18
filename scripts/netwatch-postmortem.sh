@@ -215,6 +215,9 @@ generate_report() {
 }
 
 if [[ -n "$OUTPUT" ]]; then
+  # The report embeds journal excerpts, MAC addresses, and IPs. Create it
+  # owner-readable only rather than inheriting a permissive default umask.
+  ( umask 077; : > "$OUTPUT" )
   generate_report | /usr/bin/tee "$OUTPUT"
   echo
   log_info "Report written to $OUTPUT"

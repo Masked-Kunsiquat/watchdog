@@ -246,6 +246,14 @@ To revert:
 sudo scripts/netwatch-nic-remediation.sh --revert-offloads
 ```
 
+`--apply-offloads` snapshots the pre-change offload state to
+`/var/lib/netwatch-agent/offload-state.<iface>`, and `--revert-offloads`
+restores exactly that — it does not blanket-enable every feature, so settings
+that were already off stay off. If the snapshot is missing, revert removes the
+`post-up` hook and reports that runtime state was left untouched rather than
+guessing. Removal is limited to the marker comment and the single hook line it
+owns, so `post-up` lines you added yourself are preserved.
+
 ---
 
 ## Step 6 — Verify the fix holds
@@ -292,7 +300,25 @@ interval:
 ## Capturing state during a live hang
 
 If the host wedges again and you have keyboard access, capture kernel state
-*before* rebooting. Requires `kernel.sysrq=1` (set by the journald setup script).
+*before* rebooting.
+
+This requires the SysRq key to be enabled, which it is **not** by default on
+Debian/Proxmox. Check and enable it:
+
+```bash
+sysctl kernel.sysrq                                  # 0 = disabled
+echo 'kernel.sysrq=1' > /etc/sysctl.d/99-sysrq.conf  # enable persistently
+sysctl --system
+```
+
+`kernel.sysrq=1` enables all SysRq functions, including ones that immediately
+reboot or kill processes from the console. On a machine where untrusted people
+have physical access, prefer the bitmask that allows only the debugging dumps
+used here:
+
+```bash
+echo 'kernel.sysrq=8' > /etc/sysctl.d/99-sysrq.conf   # debugging dumps only
+```
 
 At the physical console:
 

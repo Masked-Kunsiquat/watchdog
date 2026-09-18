@@ -112,6 +112,13 @@ if $SUDO /usr/bin/systemctl is-enabled --quiet netwatch-netprobe.timer 2>/dev/nu
   $SUDO /usr/bin/systemctl disable netwatch-netprobe.timer
 fi
 
+# Stopping the timer prevents new samples, but a oneshot run already in flight
+# would keep going while its files are removed underneath it.
+if $SUDO /usr/bin/systemctl is-active --quiet netwatch-netprobe.service 2>/dev/null; then
+  log_info "Stopping in-flight netwatch-netprobe sample"
+  $SUDO /usr/bin/systemctl stop netwatch-netprobe.service
+fi
+
 if $SUDO /usr/bin/systemctl is-active --quiet netwatch-agent 2>/dev/null; then
   log_info "Stopping netwatch-agent service"
   $SUDO /usr/bin/systemctl stop netwatch-agent

@@ -285,15 +285,49 @@ if [[ "$NETPROBE_CHECK_GATEWAY" == "1" ]]; then
   fi
 fi
 
-# --- Kernel event scan since the previous sample ---
+# --- Previous sample: window for the kernel scan, and counter baselines ---
 SINCE="-5min"
+PREV_TX_TIMEOUT=""
+PREV_TX_RESTART=""
+PREV_RX_MISSED=""
+PREV_RX_CRC=""
+
 if [[ -f "$STATE_FILE" ]]; then
   PREV_TS=$(/bin/grep -E '^LAST_RUN=' "$STATE_FILE" 2>/dev/null | /usr/bin/cut -d= -f2 || true)
   if [[ -n "${PREV_TS:-}" ]]; then
     SINCE="@$PREV_TS"
   fi
+  PREV_TX_TIMEOUT=$(/bin/grep -E '^TX_TIMEOUT=' "$STATE_FILE" 2>/dev/null | /usr/bin/cut -d= -f2 || true)
+  PREV_TX_RESTART=$(/bin/grep -E '^TX_RESTART=' "$STATE_FILE" 2>/dev/null | /usr/bin/cut -d= -f2 || true)
+  PREV_RX_MISSED=$(/bin/grep -E '^RX_MISSED=' "$STATE_FILE" 2>/dev/null | /usr/bin/cut -d= -f2 || true)
+  PREV_RX_CRC=$(/bin/grep -E '^RX_CRC=' "$STATE_FILE" 2>/dev/null | /usr/bin/cut -d= -f2 || true)
 fi
 KERNEL_EVENTS=$(scan_kernel_events "$SINCE")
+
+#
+# Compare a counter against its previous sample.
+#
+# Echoes the delta when the counter increased, nothing otherwise. A decrease
+# means the counters were reset (interface reload, driver reload, reboot), so
+# the new value simply becomes the next baseline rather than an anomaly.
+#
+counter_delta() {
+  local previous="$1"
+  local current="$2"
+
+  [[ -n "$previous" ]] || return 0
+  [[ "$previous" =~ ^[0-9]+$ ]] || return 0
+  [[ "$current" =~ ^[0-9]+$ ]] || return 0
+
+  if (( current > previous )); then
+    echo $(( current - previous ))
+  fi
+}
+
+DELTA_TX_TIMEOUT=$(counter_delta "$PREV_TX_TIMEOUT" "$TX_TIMEOUT")
+DELTA_TX_RESTART=$(counter_delta "$PREV_TX_RESTART" "$TX_RESTART")
+DELTA_RX_MISSED=$(counter_delta "$PREV_RX_MISSED" "$RX_MISSED")
+DELTA_RX_CRC=$(counter_delta "$PREV_RX_CRC" "$RX_CRC")
 
 # --- Emit ---
 SAMPLE="iface=$IFACE operstate=$OPERSTATE carrier=$CARRIER"
@@ -301,6 +335,16 @@ SAMPLE+=" carrier_up=$CARRIER_UP carrier_down=$CARRIER_DOWN"
 SAMPLE+=" tx_timeout=$TX_TIMEOUT tx_restart=$TX_RESTART"
 SAMPLE+=" rx_missed=$RX_MISSED rx_crc=$RX_CRC"
 SAMPLE+=" offloads=$OFFLOAD_STATE gateway=$GW_STATE events=$KERNEL_EVENTS"
+
+# Surface counter movement since the last sample; absent means unchanged
+DELTAS=""
+[[ -n "$DELTA_TX_TIMEOUT" ]] && DELTAS+="tx_timeout+$DELTA_TX_TIMEOUT "
+[[ -n "$DELTA_TX_RESTART" ]] && DELTAS+="tx_restart+$DELTA_TX_RESTART "
+[[ -n "$DELTA_RX_MISSED" ]] && DELTAS+="rx_missed+$DELTA_RX_MISSED "
+[[ -n "$DELTA_RX_CRC" ]] && DELTAS+="rx_crc+$DELTA_RX_CRC "
+if [[ -n "$DELTAS" ]]; then
+  SAMPLE+=" deltas=${DELTAS% }"
+fi
 
 ANOMALY=0
 REASONS=""
@@ -320,6 +364,17 @@ fi
 if (( OFFLOAD_DRIFT )); then
   ANOMALY=1
   REASONS+="offloads-re-enabled "
+fi
+
+# A rising tx_timeout_count means the NETDEV watchdog fired - the clearest
+# single signal that a TX hang cycle occurred since the last sample.
+if [[ -n "$DELTA_TX_TIMEOUT" ]]; then
+  ANOMALY=1
+  REASONS+="tx-timeout-count-rising "
+fi
+if [[ -n "$DELTA_RX_CRC" ]]; then
+  ANOMALY=1
+  REASONS+="rx-crc-errors-rising "
 fi
 if [[ "$GW_STATE" == "FAIL" ]]; then
   ANOMALY=1

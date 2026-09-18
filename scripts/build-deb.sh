@@ -85,7 +85,11 @@ EOF
 #!/bin/sh
 set -e
 if [ -x /usr/bin/systemctl ]; then
+  # Stop the timer first so no new sample starts, then the service itself -
+  # a oneshot run already in flight would otherwise keep going while its
+  # files are removed underneath it.
   /usr/bin/systemctl stop netwatch-netprobe.timer || true
+  /usr/bin/systemctl stop netwatch-netprobe.service || true
   /usr/bin/systemctl stop netwatch-agent.service || true
 fi
 exit 0

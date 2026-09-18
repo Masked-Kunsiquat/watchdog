@@ -569,8 +569,13 @@ test_resume_announces_wan_down() {
   started_ts=$((now_ts - 20))
 
   # Metrics left behind by a previous run with an outage still in progress.
-  # BOOT_ID is empty to match a host without /proc/sys/kernel/random/boot_id,
-  # so load_metrics() treats it as the same boot and restores the state.
+  # BOOT_ID must match the CURRENT boot or load_metrics() will (correctly)
+  # discard the state as stale, and the resume path would never be exercised.
+  local boot_id=""
+  if [[ -r /proc/sys/kernel/random/boot_id ]]; then
+    boot_id=$(< /proc/sys/kernel/random/boot_id)
+  fi
+
   cat > "$persist/metrics.dat" <<EOF
 TOTAL_REBOOTS=0
 TOTAL_OUTAGES=1
@@ -580,7 +585,8 @@ LAST_HEALTH_REPORT=0
 SERVICE_START_TIME=$started_ts
 DOWN_START=$started_ts
 LAST_REBOOT=0
-BOOT_ID=
+BOOT_ID=$boot_id
+TRACKING_SINCE=$started_ts
 EOF
 
   local output
@@ -601,10 +607,15 @@ EOF
 
   cleanup_mock_env
 
-  if echo "$output" | grep -qi "WAN appears down"; then
+  # Require the distinct resume message, not merely "WAN appears down" - a fresh
+  # outage detected by the first probe would also print the generic string and
+  # mask a broken resume path.
+  if echo "$output" | grep -qi "WAN appears down; resuming in-progress outage"; then
     test_pass
+  elif echo "$output" | grep -qi "discarding outage state"; then
+    test_fail "State was discarded as stale; the resume path never ran"
   else
-    test_fail "Resumed outage did not log 'WAN appears down': $(echo "$output" | head -3)"
+    test_fail "No resume message logged: $(echo "$output" | head -3)"
   fi
 }
 

@@ -100,6 +100,12 @@ load_metrics() {
   LAST_HEALTH_REPORT=0
   SERVICE_START_TIME=$(now)
 
+  # First time this agent ever ran. TOTAL_DOWNTIME_SECONDS is cumulative across
+  # restarts, so availability must be measured against the same cumulative
+  # window - using the current session's runtime instead would mix a lifetime
+  # numerator with a per-session denominator.
+  TRACKING_SINCE=0
+
   # Outage state persists across service restarts so a crash-restart cannot
   # silently reset an in-progress outage timer or bypass the reboot cooldown.
   DOWN_START=-1
@@ -131,6 +137,11 @@ load_metrics() {
 
   # Always reset service runtime to current start (counters remain persistent)
   SERVICE_START_TIME=$(now)
+
+  # Seed the cumulative tracking window on first ever run
+  if (( TRACKING_SINCE == 0 )); then
+    TRACKING_SINCE=$SERVICE_START_TIME
+  fi
 }
 
 save_metrics() {
@@ -144,6 +155,7 @@ SERVICE_START_TIME=$SERVICE_START_TIME
 DOWN_START=$DOWN_START
 LAST_REBOOT=$LAST_REBOOT
 BOOT_ID=$BOOT_ID
+TRACKING_SINCE=$TRACKING_SINCE
 EOF
   /bin/chmod 0600 "$METRICS_FILE" 2>/dev/null || true
   /bin/chown root:root "$METRICS_FILE" 2>/dev/null || true
@@ -693,13 +705,15 @@ while true; do
     UPTIME_HOURS=$(( $(/usr/bin/cut -d. -f1 /proc/uptime) / 3600 ))
     DOWNTIME_HOURS=$((TOTAL_DOWNTIME_SECONDS / 3600))
 
-    # Guard the divisor: service runtime is 0 if the report fires on the first
-    # pass, and a division by zero is fatal under `set -e`.
-    SERVICE_RUNTIME=$(($(now) - SERVICE_START_TIME))
-    if (( SERVICE_RUNTIME > 0 )) && (( TOTAL_DOWNTIME_SECONDS > 0 )); then
-      AVAILABILITY_PCT=$(( 100 - (TOTAL_DOWNTIME_SECONDS * 100 / SERVICE_RUNTIME) ))
-      # Clamp: downtime carried over from previous runs can exceed this
-      # service's runtime and drive the percentage negative.
+    # Measure availability over the same window the downtime was accumulated in.
+    # TOTAL_DOWNTIME_SECONDS is cumulative across restarts, so dividing it by the
+    # current session's runtime would understate availability after any restart
+    # (and pin it to 0% once cumulative downtime exceeds a fresh session).
+    # Guard the divisor: it is 0 on the very first pass, and division by zero is
+    # fatal under `set -e`.
+    TRACKED_SECONDS=$(($(now) - TRACKING_SINCE))
+    if (( TRACKED_SECONDS > 0 )) && (( TOTAL_DOWNTIME_SECONDS > 0 )); then
+      AVAILABILITY_PCT=$(( 100 - (TOTAL_DOWNTIME_SECONDS * 100 / TRACKED_SECONDS) ))
       if (( AVAILABILITY_PCT < 0 )); then
         AVAILABILITY_PCT=0
       fi

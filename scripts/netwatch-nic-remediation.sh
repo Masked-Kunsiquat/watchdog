@@ -182,6 +182,29 @@ apply_runtime() {
   local iface="$1"
   local ethtool_bin="$2"
 
+  # Snapshot the current state before changing anything, so --revert-offloads
+  # can restore exactly what was there rather than force-enabling everything.
+  # Features reported as "[fixed]" cannot be changed and are not recorded.
+  /bin/mkdir -p "$BACKUP_DIR"
+  local snapshot="$BACKUP_DIR/offload-state.$iface"
+
+  if [[ ! -f "$snapshot" ]]; then
+    if "$ethtool_bin" -k "$iface" 2>/dev/null \
+      | /bin/grep -vF '[fixed]' \
+      | /usr/bin/awk -F': *' '
+          /^(tx-checksumming|rx-checksumming|scatter-gather|tcp-segmentation-offload|generic-segmentation-offload|generic-receive-offload|rx-vlan-offload|tx-vlan-offload):/ {
+            gsub(/^[ \t]+/, "", $1); print $1 "=" $2
+          }' > "$snapshot"; then
+      /bin/chmod 0600 "$snapshot" 2>/dev/null || true
+      log_info "Saved pre-change offload state to $snapshot"
+    else
+      /bin/rm -f "$snapshot" 2>/dev/null || true
+      log_warn "Could not snapshot current offload state"
+    fi
+  else
+    log_info "Keeping existing snapshot $snapshot (from an earlier apply)"
+  fi
+
   log_info "Disabling offloads on $iface (runtime)"
   # shellcheck disable=SC2086
   if "$ethtool_bin" -K "$iface" $OFFLOAD_ARGS 2>&1 | /bin/sed 's/^/  /'; then
@@ -344,9 +367,14 @@ revert_offloads() {
 
     local tmp
     tmp=$(/bin/mktemp)
-    # Drop the marker line and the post-up line that follows it
-    /bin/grep -vF "$HOOK_MARKER" "$INTERFACES_FILE" \
-      | /bin/grep -vE "^[[:space:]]*post-up .*ethtool -K $iface " > "$tmp"
+    # Remove ONLY our marker and the single line immediately after it. A blanket
+    # filter on "post-up ... ethtool -K <iface>" would also delete hooks the
+    # operator added by hand.
+    /usr/bin/awk -v marker="$HOOK_MARKER" '
+      skip_next { skip_next = 0; next }
+      index($0, marker) { skip_next = 1; next }
+      { print }
+    ' "$INTERFACES_FILE" > "$tmp"
     /bin/cat "$tmp" > "$INTERFACES_FILE"
     /bin/rm -f "$tmp"
     log_info "post-up hook removed"
@@ -354,9 +382,51 @@ revert_offloads() {
     log_info "No post-up hook present"
   fi
 
-  log_warn "Re-enabling offloads at runtime - this restores the hang-prone configuration"
-  # shellcheck disable=SC2086
-  "$ethtool_bin" -K "$iface" gso on gro on tso on sg on 2>&1 | /bin/sed 's/^/  /' || true
+  # Restore the snapshot taken at apply time rather than force-enabling every
+  # feature, which would turn on offloads that were already off beforehand.
+  local snapshot="$BACKUP_DIR/offload-state.$iface"
+
+  if [[ ! -f "$snapshot" ]]; then
+    log_warn "No saved offload state at $snapshot"
+    log_warn "Runtime offloads left unchanged - this script will not guess a prior state."
+    log_info "To re-enable manually: $ethtool_bin -K $iface tso on gso on gro on sg on"
+    return 0
+  fi
+
+  # Map ethtool's -k report names onto the short keys that -K accepts
+  local -a restore_args=()
+  local feature value flag
+  while IFS='=' read -r feature value; do
+    [[ -n "$feature" ]] || continue
+    case "$feature" in
+      tx-checksumming)               flag="tx" ;;
+      rx-checksumming)               flag="rx" ;;
+      scatter-gather)                flag="sg" ;;
+      tcp-segmentation-offload)      flag="tso" ;;
+      generic-segmentation-offload)  flag="gso" ;;
+      generic-receive-offload)       flag="gro" ;;
+      rx-vlan-offload)               flag="rxvlan" ;;
+      tx-vlan-offload)               flag="txvlan" ;;
+      *)                             continue ;;
+    esac
+    case "$value" in
+      on|off) restore_args+=("$flag" "$value") ;;
+      *)      continue ;;
+    esac
+  done < "$snapshot"
+
+  if (( ${#restore_args[@]} == 0 )); then
+    log_warn "Snapshot $snapshot contained no restorable settings"
+    return 0
+  fi
+
+  log_warn "Restoring pre-change offload state (may reinstate the hang-prone configuration)"
+  if "$ethtool_bin" -K "$iface" "${restore_args[@]}" 2>&1 | /bin/sed 's/^/  /'; then
+    log_info "Restored: ${restore_args[*]}"
+    /bin/rm -f "$snapshot"
+  else
+    log_warn "ethtool reported an issue restoring offload state"
+  fi
 }
 
 #
