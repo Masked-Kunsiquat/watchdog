@@ -83,10 +83,12 @@ jobs:
             if command -v sudo >/dev/null 2>&1; then SUDO="sudo"; else echo "ERROR: need root privileges or sudo"; exit 1; fi
           fi
 
-          # Install the agent
-          $SUDO ./scripts/install.sh
-
-          # Configure for TCP mode with Google/Cloudflare HTTPS ports (should be reachable)
+          # Write the config BEFORE installing. install.sh starts the service,
+          # and on a fresh runner (uptime < BOOT_GRACE) the default 180s grace
+          # makes the agent sleep instead of probing - the later restart then
+          # never logs the mode within the test's wait window. Seeding the
+          # config first means it starts with BOOT_GRACE=0.
+          $SUDO mkdir -p /etc/default
           $SUDO tee /etc/default/netwatch-agent > /dev/null <<'EOF'
           HEALTH_CHECK_MODE="tcp"
           TCP_TARGETS="8.8.8.8:443 1.1.1.1:443"
@@ -98,6 +100,9 @@ jobs:
           DRY_RUN=1
           DISABLE_FILE="/etc/netwatch-agent.disable"
           EOF
+
+          # Install the agent (preserves the config written above)
+          $SUDO ./scripts/install.sh
 
           # Start service and verify restart succeeded
           START_TS=$(date -u +"%Y-%m-%d %H:%M:%S")
@@ -150,10 +155,10 @@ jobs:
             if command -v sudo >/dev/null 2>&1; then SUDO="sudo"; else echo "ERROR: need root privileges or sudo"; exit 1; fi
           fi
 
-          # Install the agent
-          $SUDO ./scripts/install.sh
-
-          # Configure for HTTP mode with valid domain names (should return 200)
+          # Seed the config before install.sh starts the service - see the TCP
+          # job for why the default 180s boot grace breaks this on a fresh
+          # runner.
+          $SUDO mkdir -p /etc/default
           $SUDO tee /etc/default/netwatch-agent > /dev/null <<'EOF'
           HEALTH_CHECK_MODE="http"
           HTTP_TARGETS="https://www.google.com https://www.cloudflare.com https://one.one.one.one"
@@ -162,10 +167,12 @@ jobs:
           PING_TIMEOUT=5
           CHECK_INTERVAL=5
           DOWN_WINDOW_SECONDS=30
-          BOOT_GRACE=5
+          BOOT_GRACE=0
           DRY_RUN=1
           DISABLE_FILE="/etc/netwatch-agent.disable"
           EOF
+
+          $SUDO ./scripts/install.sh
 
           # Start service and verify restart succeeded
           if ! $SUDO systemctl restart netwatch-agent; then
@@ -290,9 +297,10 @@ jobs:
             if command -v sudo >/dev/null 2>&1; then SUDO="sudo"; else echo "ERROR: need root privileges or sudo"; exit 1; fi
           fi
 
-          $SUDO ./scripts/install.sh
-
-          # Configure with short timings for fast test
+          # Seed the config before install.sh starts the service - see the TCP
+          # job for why the default 180s boot grace breaks this on a fresh
+          # runner.
+          $SUDO mkdir -p /etc/default
           $SUDO tee /etc/default/netwatch-agent > /dev/null <<'EOF'
           HEALTH_CHECK_MODE="icmp"
           TARGETS="8.8.8.8 1.1.1.1 9.9.9.9"
@@ -301,11 +309,13 @@ jobs:
           PING_TIMEOUT=3
           CHECK_INTERVAL=5
           DOWN_WINDOW_SECONDS=10
-          BOOT_GRACE=10
+          BOOT_GRACE=0
           USE_FPING="yes"
           DRY_RUN=1
           DISABLE_FILE="/etc/netwatch-agent.disable"
           EOF
+
+          $SUDO ./scripts/install.sh
 
           # Start service and allow it to settle before capturing logs
           START_TS=$(date -u +"%Y-%m-%d %H:%M:%S")
