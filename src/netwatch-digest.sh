@@ -114,9 +114,14 @@ get_stat() {
   echo "${value:-0}"
 }
 
-# Read a numeric field from a KEY=VALUE state file, with a fallback
+# Read a numeric field from a KEY=VALUE state file, with a fallback.
+#
+# The fallback uses ${3-0} (unset-only), not ${3:-0}: callers pass an explicit
+# empty string to mean "no baseline recorded yet", and ${3:-0} would turn that
+# into 0 - making the first-ever digest report the full counter value as an
+# overnight delta.
 read_field() {
-  local file="$1" key="$2" fallback="${3:-0}" value
+  local file="$1" key="$2" fallback="${3-0}" value
 
   [[ -r "$file" ]] || { echo "$fallback"; return 0; }
   value=$(/bin/grep -E "^${key}=" "$file" 2>/dev/null | /usr/bin/head -1 | /usr/bin/cut -d= -f2)
@@ -340,13 +345,13 @@ Verdict: **{VERDICT}** ({VERDICT_NOTES})
 
 ```
 NIC ({IFACE})        link={OPERSTATE}  offloads: {OFFLOADS}
-Hangs (24h)          hardware-unit-hang={HANGS}  tx-timeout={TXTIMEOUTS}
+Hangs ({WINDOW_HOURS}h)         hardware-unit-hang={HANGS}  tx-timeout={TXTIMEOUTS}
                      adapter-reset={RESETS}  me-corruption={ME}
 Counters             tx_timeout={TX_TIMEOUT} (Δ{D_TX_TIMEOUT})
                      tx_restart={TX_RESTART} (Δ{D_TX_RESTART})
                      rx_missed={RX_MISSED}  rx_crc={RX_CRC}
-Link changes (24h)   {LINK_CHANGES}
-WAN (24h)            outages={DAY_OUTAGES}  downtime={DAY_DOWNTIME}  dry-run-trips={DRYRUN_TRIPS}
+Link changes ({WINDOW_HOURS}h)  {LINK_CHANGES}
+WAN ({WINDOW_HOURS}h)           outages={DAY_OUTAGES}  downtime={DAY_DOWNTIME}  dry-run-trips={DRYRUN_TRIPS}
 WAN (lifetime)       outages={TOTAL_OUTAGES}  recoveries={TOTAL_RECOVERIES}  reboots={TOTAL_REBOOTS}
 Host                 uptime={UPTIME}
 ```'
@@ -396,11 +401,34 @@ log "Digest [$VERDICT] iface=$IFACE_LABEL hangs=$HANG_COUNT tx_timeout=$TX_TIMEO
 TARGET_URL="${DIGEST_WEBHOOK_URL:-$WEBHOOK_URL}"
 
 if [[ "$WEBHOOK_ENABLED" == "1" ]] && [[ -n "$TARGET_URL" ]] && [[ -x /usr/bin/curl ]]; then
-  # JSON-escape the body: backslashes first, then quotes, then newlines.
+  # JSON-escape the body. Backslashes MUST come first, or the escapes added
+  # below would themselves be escaped again.
   JSON_BODY="$BODY"
   JSON_BODY="${JSON_BODY//\\/\\\\}"
   JSON_BODY="${JSON_BODY//\"/\\\"}"
+
+  # RFC 8259 forbids raw U+0000-U+001F inside a string, so every control
+  # character needs escaping - not just newline. A tab or carriage return in a
+  # custom DIGEST_BODY_TEMPLATE would otherwise produce a payload that strict
+  # parsers reject ("Bad control character in string literal"), silently
+  # breaking delivery.
   JSON_BODY="${JSON_BODY//$'\n'/\\n}"
+  JSON_BODY="${JSON_BODY//$'\r'/\\r}"
+  JSON_BODY="${JSON_BODY//$'\t'/\\t}"
+  JSON_BODY="${JSON_BODY//$'\b'/\\b}"
+  JSON_BODY="${JSON_BODY//$'\f'/\\f}"
+
+  # Remaining control characters have no short escape; emit the \uXXXX form.
+  # No `local` here: this block runs at script scope, not inside a function.
+  # Decimal codepoints, skipping the ones already handled above
+  # (8=\b 9=\t 10=\n 12=\f 13=\r).
+  for _dec in 1 2 3 4 5 6 7 11 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31; do
+    _cc=$(printf '%b' "$(printf '\\%03o' "$_dec")")
+    if [[ "$JSON_BODY" == *"$_cc"* ]]; then
+      _esc=$(printf '\\u%04X' "$_dec")
+      JSON_BODY="${JSON_BODY//$_cc/$_esc}"
+    fi
+  done
 
   PAYLOAD="{\"content\":\"$JSON_BODY\"}"
 

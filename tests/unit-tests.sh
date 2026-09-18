@@ -619,6 +619,55 @@ EOF
   fi
 }
 
+# read_field's callers pass an explicit "" to mean "no baseline recorded yet".
+# A ${3:-0} default would turn that into 0, making the FIRST digest report the
+# entire counter value as an overnight delta (e.g. tx_restart jumping 0 -> 912).
+# ${3-0} preserves the explicit empty.
+test_digest_first_run_has_no_fake_delta() {
+  test_start "Digest: first run reports no baseline instead of a fake delta"
+
+  local digest="$SCRIPT_DIR/../src/netwatch-digest.sh"
+  if [[ ! -f "$digest" ]]; then
+    test_fail "Digest script not found: $digest"
+    return
+  fi
+
+  # Guard the source: the unset-only form is what makes this work
+  # shellcheck disable=SC2016  # literal source text, not an expansion
+  if grep -q 'fallback="${3:-0}"' "$digest"; then
+    test_fail "read_field uses \${3:-0}; an explicit empty baseline becomes 0"
+    return
+  fi
+
+  # shellcheck disable=SC2016  # literal source text, not an expansion
+  if ! grep -q 'fallback="${3-0}"' "$digest"; then
+    test_fail "read_field does not use the unset-only \${3-0} default"
+    return
+  fi
+
+  # Behavioural check: with no state file, deltas must read n/a
+  setup_mock_env
+  local persist="$MOCK_DIR/persist"
+  mkdir -p "$persist"
+
+  local output
+  output=$(
+    PERSIST_DIR="$persist"     NETPROBE_IFACE="lo"     LOG_TO_STDERR=1     WEBHOOK_ENABLED=0     timeout 20 bash "$digest" 2>&1
+  ) || true
+
+  cleanup_mock_env
+
+  if echo "$output" | grep -q 'tx_restart=[0-9]*(Δn/a)'; then
+    test_pass
+  elif echo "$output" | grep -qE 'tx_restart=[0-9]+\(Δ[0-9]+\)'; then
+    test_fail "First run fabricated a delta: $(echo "$output" | grep -o 'tx_restart=[0-9]*(Δ[^)]*)' | head -1)"
+  else
+    # Counters unreadable in this environment is acceptable; the source guard
+    # above already covers the defaulting behaviour.
+    test_pass
+  fi
+}
+
 #
 # Regression Tests (dry-run cooldown)
 #
@@ -793,7 +842,11 @@ CURLEOF
   export NETPROBE_IFACE="lo"
   export WEBHOOK_ENABLED=1
   export WEBHOOK_URL="https://example.invalid/hook"
-  export DIGEST_BODY_TEMPLATE='quote " backslash \ and {VERDICT}'
+  # Include control characters: RFC 8259 forbids raw U+0000-U+001F in strings,
+  # so a tab or carriage return must be escaped too, not just newline.
+  export DIGEST_BODY_TEMPLATE
+  DIGEST_BODY_TEMPLATE=$(printf 'quote " backslash \ tab:	cr:
+bell: and {VERDICT}')
   bash "$patched" >/dev/null 2>&1 || true
   unset CAPTURE_FILE PERSIST_DIR NETPROBE_IFACE WEBHOOK_ENABLED WEBHOOK_URL DIGEST_BODY_TEMPLATE
 
@@ -814,7 +867,9 @@ CURLEOF
       bs=$(printf '\134')
       esc_quote="${bs}\""
       esc_backslash="${bs}${bs}"
-      if grep -qF "$esc_quote" "$capture" && grep -qF "$esc_backslash" "$capture"; then
+      # Also require that no RAW control character survived into the payload:
+      # those are exactly what strict parsers reject.
+      if grep -qF "$esc_quote" "$capture" && grep -qF "$esc_backslash" "$capture"         && ! LC_ALL=C grep -q '[-]' "$capture"; then
         result="ok"
       fi
     fi
@@ -1516,6 +1571,7 @@ test_boot_grace_calculation
 
 # Regression tests (errexit safety)
 test_dryrun_does_not_arm_cooldown
+test_digest_first_run_has_no_fake_delta
 test_digest_redacts_host_identifiers
 test_digest_template_placeholders_substituted
 test_digest_json_escaping
