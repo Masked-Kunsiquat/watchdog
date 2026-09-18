@@ -332,11 +332,24 @@ jobs:
             exit 1
           fi
 
-          # Check that probes are succeeding
-          if $SUDO journalctl -u netwatch-agent --no-pager --since "$START_TS" | grep -i "WAN appears down"; then
-            echo "ERROR: WAN down detected on reachable targets"
-            $SUDO journalctl -u netwatch-agent --no-pager --since "$START_TS"
-            exit 1
+          # Whether the targets are actually reachable is a property of the
+          # runner, not of the agent: GitHub runners frequently block outbound
+          # ICMP entirely. Probe first and only assert "no outage" when ICMP
+          # genuinely works here, so this job tests the agent rather than the
+          # network policy of the machine it happens to land on.
+          if $SUDO fping -c 1 -t 2000 -q 8.8.8.8 1.1.1.1 9.9.9.9 2>&1 | grep -q ' = [0-9]*/[1-9]'; then
+            echo "ICMP is permitted on this runner; asserting probes succeed"
+            if $SUDO journalctl -u netwatch-agent --no-pager --since "$START_TS" | grep -i "WAN appears down"; then
+              echo "ERROR: WAN down detected on reachable targets"
+              $SUDO journalctl -u netwatch-agent --no-pager --since "$START_TS"
+              exit 1
+            fi
+            echo "✓ probes succeeded against reachable targets"
+          else
+            echo "NOTE: outbound ICMP is blocked on this runner."
+            echo "Skipping the 'probes succeed' assertion - it would test the"
+            echo "runner's network policy, not the agent. The 'using fping'"
+            echo "check above already proved fping selection works."
           fi
 
           echo "✓ fping integration test passed"
