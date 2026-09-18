@@ -11,6 +11,84 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Release workflow: on `v*` tags, build and upload artifacts to the GitHub Release.
 - Debian packaging script (`scripts/build-deb.sh`) to build `netwatch-agent_<version>_all.deb` via dpkg-deb (no network), including systemd enablement hooks.
 
+## [v1.1.0] - 2026-09-18
+
+**Local NIC health monitoring and e1000e hang remediation**, plus two agent
+correctness fixes found while investigating repeated host outages.
+
+### Fixed
+
+**Agent crash-restart loop (caused false-positive outage reports)**
+- Counter increments used the post-increment form `((ok++))`. Under
+  `set -Eeuo pipefail` this is fatal: when the counter is 0 the expression
+  evaluates to 0 and returns exit status 1, which errexit treats as an error.
+  The agent died on the first *successful* probe and systemd restarted it,
+  producing a new PID roughly every 30 minutes. Converted all six call sites to
+  the pre-increment form already used in the test suite.
+- `DOWN_START` and `LAST_REBOOT` were memory-only, so each restart re-derived
+  the outage window from boot time and reported a phantom multi-day outage
+  (observed: `DRY_RUN: would reboot now (outage: 721303s >= 60s)` on a host
+  that was online). Both are now persisted to `metrics.dat` and keyed by boot
+  ID, so state is resumed within a boot and discarded across boots.
+- The availability calculation in the health report divided by service runtime,
+  which is zero if the report fires on the first pass — fatal under `errexit`.
+  Now guarded and clamped.
+- `netwatch-agent.service` gained `StartLimitIntervalSec`/`StartLimitBurst` so a
+  crash-loop surfaces as a failed unit instead of restarting silently forever.
+- Corrected the stale `Documentation=` URL in the unit file.
+
+### Added
+
+**NIC health sampler** (`src/netwatch-netprobe.sh`)
+- Samples link state, driver error counters (`tx_timeout_count`,
+  `tx_restart_queue`, `rx_missed_errors`, `rx_crc_errors`), offload
+  configuration, and gateway reachability on a 60s systemd timer.
+- Resolves the *physical* NIC behind a bridge: on Proxmox the default route
+  points at `vmbr0`, which reports nominal state even while the underlying NIC
+  is wedged.
+- Scans the kernel log for e1000e hang signatures verified against the upstream
+  driver source, classifying `HANG_TSO`, `HANG_TXTIMEOUT`, `RESET_UNEXPECTED`,
+  `ME_CORRUPTION`, `LINK_CHANGE`, and `PCIE_AER`.
+- Detects offloads silently re-enabling after a link-up event.
+- Anomalies log at `daemon.crit`, which forces an immediate journald fsync so
+  the record survives a hard power-cycle; routine samples stay at `info`.
+- `Type=oneshot` with `TimeoutStartSec=20s` so a hung `ethtool` during an actual
+  NIC hang is killed rather than accumulating stuck instances.
+- Install with `INSTALL_NETPROBE=0` to skip.
+
+**e1000e remediation tooling** (`scripts/netwatch-nic-remediation.sh`)
+- `--status` / `--apply-offloads` / `--revert-offloads`. Nothing is applied
+  automatically; `--status` changes nothing.
+- Persists via a `post-up` hook, because the driver re-enables offloads on
+  link-up events. On a bridged host the hook attaches to the bridge stanza but
+  names the physical port explicitly, since the physical port typically has no
+  `auto` stanza and `post-up` on a non-auto slave is unreliable under ifupdown2.
+- Backs up `/etc/network/interfaces` before every modification; idempotent.
+
+**Forensics and logging tooling**
+- `scripts/netwatch-postmortem.sh` — previous-boot analysis with `--all-boots`
+  summary, hang-class counts, and current NIC state.
+- `scripts/netwatch-setup-journald.sh` — persistent, size-capped journal. Uses a
+  `90-` drop-in prefix because systemd sorts drop-ins lexicographically across
+  all config directories and the last file wins for single-value options.
+- `docs/nic-diagnostics.md` — full runbook with a worked example.
+
+**Tests**
+- Three regression tests covering the errexit/increment crash, including a
+  source guard that fails if the unsafe form is reintroduced. All three fail
+  against the pre-fix source.
+
+### Changed
+- `install.sh` now creates `/var/lib/netwatch-agent` (previously only created at
+  runtime by the agent) and installs the sampler components.
+- `uninstall.sh` now removes the sampler and cleans `/var/lib/netwatch-agent`.
+  Diagnostic logs are **preserved** unless `--purge-data` is given, since they
+  may be the only record of a past outage.
+- `build-deb.sh` stages the new components and recommends `ethtool`.
+- README documents the NIC tooling and corrects the Hardware Watchdog section,
+  which recommended a setup that conflicts with Proxmox's `watchdog-mux`.
+- `.gitattributes` enforces LF on `.timer` and `.logrotate` files.
+
 ## [v1.0.0] - 2025-12-09
 
 ### Added

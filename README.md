@@ -17,6 +17,8 @@ Netwatch automatically reboots your Proxmox host after a configurable period of 
 - **Systemd integration** with automatic restart and Type=notify support
 - **Zero dependencies** beyond coreutils (shell + systemd only, curl optional for webhooks)
 - **Root-first, sudo-optional** installers for Proxmox environments without sudo
+- **Local NIC health sampling** - link state, driver error counters, and offload drift
+- **e1000e hang diagnosis and remediation** for Intel I217/I218/I219 NICs
 
 ## Quick Start
 
@@ -549,8 +551,73 @@ sudo systemctl is-enabled netwatch-agent
 sudo journalctl -u netwatch-agent | grep -i watchdog
 ```
 
+## NIC Health Monitoring & e1000e Hang Remediation
+
+Netwatch probes **WAN reachability**. A separate failure mode looks identical
+from the outside but has a completely different cause: the local NIC driver
+wedging while the kernel stays alive. On Intel I217/I218/I219 NICs (`e1000e`),
+common in small-form-factor business desktops used as Proxmox hosts, the TX
+descriptor ring can hang and never recover on its own.
+
+Symptoms: the host is unreachable but a keyboard-attached `reboot` still works
+cleanly, the link light stays on, and the interface still reports `UP`.
+
+The WAN watchdog cannot tell this apart from an ISP outage — it just sees
+unreachable targets. These tools address the local layer.
+
+### Diagnose
+
+```bash
+# What failure signature appears in past boots?
+sudo scripts/netwatch-postmortem.sh --all-boots
+
+# Current NIC, offload, and counter state
+sudo scripts/netwatch-nic-remediation.sh --status
+```
+
+A high `Detected Hardware Unit Hang` count confirms the TSO/offload erratum.
+
+### Remediate
+
+```bash
+sudo scripts/netwatch-nic-remediation.sh --apply-offloads   # immediate + persistent
+sudo scripts/netwatch-nic-remediation.sh --revert-offloads  # undo
+```
+
+Persistence uses a `post-up` hook, because the driver silently re-enables
+offloads on link-up events. On a bridged Proxmox host the hook is attached to
+the bridge stanza while naming the physical port explicitly — see
+[docs/nic-diagnostics.md](docs/nic-diagnostics.md) for why.
+
+### Monitor
+
+The sampler (installed and enabled by default) records link state, driver error
+counters, and offload drift every 60s:
+
+```bash
+journalctl -t netwatch-netprobe -f                      # live samples
+journalctl -t netwatch-netprobe -p crit --no-pager      # anomalies only
+```
+
+Anomalies log at `crit` so journald fsyncs immediately and the record survives a
+hard power-cycle. Skip installing it with `INSTALL_NETPROBE=0 ./scripts/install.sh`.
+
+### Persistent logging
+
+Post-mortem analysis requires a journal that survives reboots — without it
+`journalctl -b -1` returns nothing:
+
+```bash
+sudo scripts/netwatch-setup-journald.sh --check   # report only
+sudo scripts/netwatch-setup-journald.sh --apply   # enable + cap size
+```
+
+Full runbook: **[docs/nic-diagnostics.md](docs/nic-diagnostics.md)**
+
 ## Documentation
 
+- [docs/nic-diagnostics.md](docs/nic-diagnostics.md) - NIC hang diagnosis and remediation
+- [docs/integration-testing.md](docs/integration-testing.md) - Manual integration test procedures
 - [AGENTS.md](AGENTS.md) - Complete technical specification
 - [GAMEPLAN.md](GAMEPLAN.md) - Implementation phases
 - [CHANGELOG.md](CHANGELOG.md) - Version history
@@ -627,6 +694,14 @@ Netwatch implements a simple, deterministic state machine:
 | `/etc/systemd/system/netwatch-agent.service` | systemd unit | 0644 root:root |
 | `/etc/netwatch-agent.disable` | Disable flag (optional) | any |
 | `/run/netwatch-agent/` | Runtime state (volatile) | 0755 root:root |
+| `/var/lib/netwatch-agent/` | Persistent metrics and outage state | 0750 root:root |
+| `/usr/local/sbin/netwatch-netprobe.sh` | NIC health sampler | 0755 root:root |
+| `/etc/default/netwatch-netprobe` | Sampler configuration | 0640 root:root |
+| `/etc/systemd/system/netwatch-netprobe.service` | Sampler unit | 0644 root:root |
+| `/etc/systemd/system/netwatch-netprobe.timer` | Sampler timer (60s) | 0644 root:root |
+| `/etc/logrotate.d/netwatch-netprobe` | Log rotation for the sampler | 0644 root:root |
+| `/var/log/netwatch/net-health.log` | Sampler log mirror (journal is authoritative) | 0640 root:adm |
+| `/run/netwatch-netprobe/` | Sampler delta state (volatile) | 0755 root:root |
 
 ## Requirements
 
@@ -645,11 +720,33 @@ Netwatch implements a simple, deterministic state machine:
 
 ## Hardware Watchdog (Complementary)
 
-Netwatch protects against **network-related outages**. For protection against **kernel hangs or complete system freezes**, enable your hardware watchdog separately.
+Netwatch protects against **network-related outages**. For **kernel panics or
+complete system freezes**, a hardware watchdog is the complementary layer.
+
+> **⚠️ Check for a conflict on Proxmox first.**
+>
+> Proxmox's HA stack claims `/dev/watchdog` through `watchdog-mux.service`. If it
+> is running, installing the generic `watchdog` daemon against the same device
+> **conflicts with it**, and the Proxmox forums specifically caution against
+> enabling arbitrary hardware watchdogs because of spurious-reboot risk.
+>
+> ```bash
+> systemctl is-active watchdog-mux
+> ```
+>
+> - **`active`** — `/dev/watchdog` is taken. Do **not** add a second daemon
+>   against it. Watchdog behavior is governed by PVE's HA fencing.
+> - **`inactive`** — the device is free, and the setup below is safe.
+>
+> Note also that `softdog` (the PVE default when no hardware module is set) only
+> detects userspace liveness — whether `watchdog-mux` keeps petting it. It will
+> **not** reboot on a NIC-only hang, which is the failure mode the NIC tooling
+> above addresses.
 
 ### Quick Hardware Watchdog Setup
 
-Most Proxmox/server hardware has a built-in hardware watchdog timer (e.g., Intel iTCO_wdt):
+Only if `watchdog-mux` is **inactive**. Most server hardware exposes an Intel
+`iTCO_wdt` timer:
 
 1. **Load the kernel module**:
    ```bash
@@ -673,11 +770,13 @@ Most Proxmox/server hardware has a built-in hardware watchdog timer (e.g., Intel
    sudo systemctl enable --now watchdog
    ```
 
-The hardware watchdog and Netwatch work together:
-- **Netwatch**: Handles WAN outages, reboots when internet is lost
-- **Hardware watchdog**: Handles kernel panics, reboots when system hangs
+The layers cover different failures:
 
-Both are recommended for production Proxmox hosts.
+| Layer | Handles | Does not handle |
+|---|---|---|
+| **Netwatch agent** | WAN outages | Local NIC hangs (looks identical from outside) |
+| **NIC sampler** | e1000e hangs, link loss, offload drift | WAN-side outages |
+| **Hardware watchdog** | Kernel panics, total freezes | NIC hangs — the kernel is alive and still petting it |
 
 ## License
 
