@@ -544,6 +544,71 @@ test_fping_regex_all_down() {
 }
 
 #
+# Regression Tests (outage state persistence)
+#
+
+# An outage that spans a service restart must still be announced. DOWN_START is
+# persisted across restarts, so the main loop sees it already set and goes
+# straight to "outage continuing" - meaning the "WAN appears down" transition
+# would never be logged for that outage unless the resume path restates it.
+# CI and operators both grep for that string.
+test_resume_announces_wan_down() {
+  test_start "Regression: outage resumed across restart still logs WAN down"
+
+  if [[ ! -f "$AGENT_SCRIPT" ]]; then
+    test_fail "Agent script not found: $AGENT_SCRIPT"
+    return
+  fi
+
+  setup_mock_env
+  local persist="$MOCK_DIR/persist"
+  mkdir -p "$persist"
+
+  local now_ts started_ts
+  now_ts=$(date +%s)
+  started_ts=$((now_ts - 20))
+
+  # Metrics left behind by a previous run with an outage still in progress.
+  # BOOT_ID is empty to match a host without /proc/sys/kernel/random/boot_id,
+  # so load_metrics() treats it as the same boot and restores the state.
+  cat > "$persist/metrics.dat" <<EOF
+TOTAL_REBOOTS=0
+TOTAL_OUTAGES=1
+TOTAL_RECOVERIES=0
+TOTAL_DOWNTIME_SECONDS=0
+LAST_HEALTH_REPORT=0
+SERVICE_START_TIME=$started_ts
+DOWN_START=$started_ts
+LAST_REBOOT=0
+BOOT_ID=
+EOF
+
+  local output
+  output=$(
+    STATE_DIR="$MOCK_DIR/run" \
+    PERSIST_DIR="$persist" \
+    LOG_TO_STDERR=1 \
+    TARGETS="203.0.113.1" \
+    MIN_OK=1 \
+    BOOT_GRACE=0 \
+    CHECK_INTERVAL=1 \
+    DOWN_WINDOW_SECONDS=3600 \
+    DRY_RUN=1 \
+    USE_FPING="no" \
+    DISABLE_FILE="$MOCK_DIR/none.disable" \
+    timeout 4 bash "$AGENT_SCRIPT" 2>&1
+  ) || true
+
+  cleanup_mock_env
+
+  if echo "$output" | grep -qi "WAN appears down"; then
+    test_pass
+  else
+    test_fail "Resumed outage did not log 'WAN appears down': $(echo "$output" | head -3)"
+  fi
+}
+
+#
 # Regression Tests (errexit safety)
 #
 
@@ -1025,6 +1090,7 @@ test_cooldown_enforcement
 test_boot_grace_calculation
 
 # Regression tests (errexit safety)
+test_resume_announces_wan_down
 test_fping_regex_matches_real_output
 test_fping_regex_all_down
 test_errexit_safe_increment

@@ -608,7 +608,11 @@ fi
 # discarded them if the boot ID changed, so anything surviving here belongs to
 # the current boot.
 if (( DOWN_START != -1 )); then
-  log "Resuming in-progress outage started $(($(now) - DOWN_START))s ago"
+  # Restate the down condition on resume. Without this an outage that spans a
+  # service restart would never be announced in the journal: the loop would go
+  # straight to "outage continuing" because DOWN_START is already set, and the
+  # "WAN appears down" transition log would never fire for that outage.
+  log "WAN appears down; resuming in-progress outage started $(($(now) - DOWN_START))s ago"
 fi
 
 # Initialize health report schedule only if enabled
