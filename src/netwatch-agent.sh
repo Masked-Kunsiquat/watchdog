@@ -445,8 +445,12 @@ probe_icmp() {
     # Parse fping summary lines: look for "xmt/rcv/%loss" with rcv >= 1
     while IFS= read -r line; do
       [[ "$line" == *"xmt/rcv/%loss"* ]] || continue
-      # Extract received count (format: "host : xmt/rcv/%loss = X/Y/Z%")
-      if [[ "$line" =~ :\ ([0-9]+)/([0-9]+)/ ]]; then
+      # Extract the received count. The real format is:
+      #   1.1.1.1 : xmt/rcv/%loss = 3/3/0%, min/avg/max = 22.4/24.0/27.3
+      # so the counts follow "= ", NOT the colon - the colon is followed by the
+      # literal text "xmt/rcv/%loss". Anchoring on ": " never matched, so every
+      # probe counted as a failure even when all targets replied.
+      if [[ "$line" =~ =\ ([0-9]+)/([0-9]+)/ ]]; then
         local rcv="${BASH_REMATCH[2]}"
         if (( rcv >= 1 )); then
           ((++ok))

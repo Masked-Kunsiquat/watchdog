@@ -460,6 +460,90 @@ test_boot_grace_calculation() {
 }
 
 #
+# Regression Tests (fping summary parsing)
+#
+
+# The agent parses fping's per-host summary to count replies. Real `fping -q`
+# output looks like:
+#
+#   1.1.1.1 : xmt/rcv/%loss = 3/3/0%, min/avg/max = 22.4/24.0/27.3
+#
+# The counts follow "= ", not the colon - the colon is followed by the literal
+# text "xmt/rcv/%loss". An earlier version anchored on ": " and therefore never
+# matched, so every probe counted as a failure even when all targets replied,
+# producing phantom outage reports on a healthy host.
+#
+# This test runs the agent's OWN regex against verbatim fping output, so it
+# fails if the anchor regresses. (The parse_fping_success_count helper above
+# uses its own copy of the regex and so cannot catch this.)
+test_fping_regex_matches_real_output() {
+  test_start "Regression: agent fping regex matches real fping output"
+
+  if [[ ! -f "$AGENT_SCRIPT" ]]; then
+    test_fail "Agent script not found: $AGENT_SCRIPT"
+    return
+  fi
+
+  # Verbatim `fping -c 3 -q` output from a host where all targets replied
+  local real_output='1.1.1.1 : xmt/rcv/%loss = 3/3/0%, min/avg/max = 22.4/24.0/27.3
+8.8.8.8 : xmt/rcv/%loss = 3/3/0%, min/avg/max = 19.2/20.8/24.1
+9.9.9.9 : xmt/rcv/%loss = 3/3/0%, min/avg/max = 21.0/21.7/22.2'
+
+  local ok=0
+  while IFS= read -r line; do
+    [[ "$line" == *"xmt/rcv/%loss"* ]] || continue
+    if [[ "$line" =~ =\ ([0-9]+)/([0-9]+)/ ]]; then
+      if (( BASH_REMATCH[2] >= 1 )); then
+        ((++ok))
+      fi
+    fi
+  done <<<"$real_output"
+
+  # Guard the source. Isolate the agent's fping-summary regex and require it to
+  # anchor on "=" rather than ":". fping puts the literal text "xmt/rcv/%loss"
+  # after the colon, so a ':' anchor can never match.
+  local regex_line
+  # shellcheck disable=SC2016  # literal source text, not an expansion
+  regex_line=$(grep -F 'BASH_REMATCH[2]' -B3 "$AGENT_SCRIPT" \
+    | grep -F '"$line" =~' | head -1)
+
+  if [[ -z "$regex_line" ]]; then
+    test_fail "Could not locate the fping summary regex in the agent source"
+  elif [[ "$regex_line" != *'=~ ='* ]]; then
+    test_fail "Agent fping regex must anchor on '=', found: ${regex_line#"${regex_line%%[![:space:]]*}"}"
+  elif (( ok == 3 )); then
+    test_pass
+  else
+    test_fail "Expected 3 replying targets, counted $ok"
+  fi
+}
+
+# All targets genuinely down must still count zero, so the fix does not
+# introduce false positives in the other direction.
+test_fping_regex_all_down() {
+  test_start "Regression: fping regex counts zero when all targets are down"
+
+  local down_output='1.1.1.1 : xmt/rcv/%loss = 3/0/100%
+8.8.8.8 : xmt/rcv/%loss = 3/0/100%'
+
+  local ok=0
+  while IFS= read -r line; do
+    [[ "$line" == *"xmt/rcv/%loss"* ]] || continue
+    if [[ "$line" =~ =\ ([0-9]+)/([0-9]+)/ ]]; then
+      if (( BASH_REMATCH[2] >= 1 )); then
+        ((++ok))
+      fi
+    fi
+  done <<<"$down_output"
+
+  if (( ok == 0 )); then
+    test_pass
+  else
+    test_fail "Expected 0 replying targets, counted $ok"
+  fi
+}
+
+#
 # Regression Tests (errexit safety)
 #
 
@@ -941,6 +1025,8 @@ test_cooldown_enforcement
 test_boot_grace_calculation
 
 # Regression tests (errexit safety)
+test_fping_regex_matches_real_output
+test_fping_regex_all_down
 test_errexit_safe_increment
 test_no_post_increment_in_agent
 test_agent_increment_lines_survive_errexit
