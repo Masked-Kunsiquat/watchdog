@@ -1,0 +1,37 @@
+[Unit]
+Description=Netwatch NIC health sampler (local interface telemetry)
+Documentation=https://github.com/Masked-Kunsiquat/watchdog
+After=network.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/default/netwatch-netprobe
+ExecStart=/usr/local/sbin/netwatch-netprobe.sh
+
+# A wedged NIC can block ethtool/ping indefinitely. Bound each sample so a hung
+# run is killed rather than accumulating stuck instances.
+TimeoutStartSec=20s
+
+# Hardening. CAP_NET_ADMIN is required for ethtool ioctls; CAP_NET_RAW for the
+# ICMP gateway probe. PrivateNetwork must NOT be set - the whole point is to
+# observe the real host NIC.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
+
+# Writable paths: the plain-text log mirror and the volatile delta state
+ReadWritePaths=/var/log/netwatch
+RuntimeDirectory=netwatch-netprobe
+RuntimeDirectoryMode=0755
+
+[Install]
+WantedBy=multi-user.target

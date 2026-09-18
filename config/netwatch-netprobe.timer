@@ -1,0 +1,20 @@
+[Unit]
+Description=Run the Netwatch NIC health sampler every 60s
+Documentation=https://github.com/Masked-Kunsiquat/watchdog
+
+[Timer]
+# First sample shortly after boot, then every 60s thereafter.
+OnBootSec=15s
+OnUnitActiveSec=60s
+
+# systemd coalesces timer wakeups within a 1-minute window by default, which
+# would make a 60s cadence wander badly. Tighten it so samples land predictably.
+AccuracySec=1s
+
+# Persistent= is deliberately omitted: it only affects OnCalendar= timers and is
+# a no-op for the monotonic timers used here.
+
+Unit=netwatch-netprobe.service
+
+[Install]
+WantedBy=timers.target

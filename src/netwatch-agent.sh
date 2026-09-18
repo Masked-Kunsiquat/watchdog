@@ -100,10 +100,33 @@ load_metrics() {
   LAST_HEALTH_REPORT=0
   SERVICE_START_TIME=$(now)
 
+  # Outage state persists across service restarts so a crash-restart cannot
+  # silently reset an in-progress outage timer or bypass the reboot cooldown.
+  DOWN_START=-1
+  LAST_REBOOT=0
+  BOOT_ID=""
+
   # Load from file if exists
   if [[ -f "$METRICS_FILE" ]]; then
     # shellcheck disable=SC1090
     . "$METRICS_FILE" 2>/dev/null || true
+  fi
+
+  # Outage state is only meaningful within a single boot. A saved DOWN_START
+  # from a previous boot would otherwise be measured against the current clock
+  # and report a multi-day phantom outage, so discard it when the boot changes.
+  local current_boot_id=""
+  if [[ -r /proc/sys/kernel/random/boot_id ]]; then
+    current_boot_id=$(< /proc/sys/kernel/random/boot_id)
+  fi
+
+  if [[ "$BOOT_ID" != "$current_boot_id" ]]; then
+    if (( DOWN_START != -1 )) || (( LAST_REBOOT != 0 )); then
+      log "New boot detected; discarding outage state from previous boot"
+    fi
+    DOWN_START=-1
+    LAST_REBOOT=0
+    BOOT_ID="$current_boot_id"
   fi
 
   # Always reset service runtime to current start (counters remain persistent)
@@ -118,6 +141,9 @@ TOTAL_RECOVERIES=$TOTAL_RECOVERIES
 TOTAL_DOWNTIME_SECONDS=$TOTAL_DOWNTIME_SECONDS
 LAST_HEALTH_REPORT=$LAST_HEALTH_REPORT
 SERVICE_START_TIME=$SERVICE_START_TIME
+DOWN_START=$DOWN_START
+LAST_REBOOT=$LAST_REBOOT
+BOOT_ID=$BOOT_ID
 EOF
   /bin/chmod 0600 "$METRICS_FILE" 2>/dev/null || true
   /bin/chown root:root "$METRICS_FILE" 2>/dev/null || true
@@ -309,7 +335,7 @@ probe_tcp() {
   # Count successes
   for tmp_file in "${tmp_files[@]}"; do
     if [[ -f "$tmp_file" ]] && [[ "$(<"$tmp_file")" == "ok" ]]; then
-      ((ok++))
+      ((++ok))
     fi
     /bin/rm -f "$tmp_file" 2>/dev/null || true
   done
@@ -370,7 +396,7 @@ probe_http() {
   # Count successes
   for tmp_file in "${tmp_files[@]}"; do
     if [[ -f "$tmp_file" ]] && [[ "$(<"$tmp_file")" == "ok" ]]; then
-      ((ok++))
+      ((++ok))
     fi
     /bin/rm -f "$tmp_file" 2>/dev/null || true
   done
@@ -423,8 +449,8 @@ probe_icmp() {
       if [[ "$line" =~ :\ ([0-9]+)/([0-9]+)/ ]]; then
         local rcv="${BASH_REMATCH[2]}"
         if (( rcv >= 1 )); then
-          ((ok++))
-          ((fping_ok++))
+          ((++ok))
+          ((++fping_ok))
         fi
       fi
     done <<<"$output"
@@ -440,7 +466,7 @@ probe_icmp() {
       done
       for pid in "${pids[@]}"; do
         if wait "$pid"; then
-          ((ok++))
+          ((++ok))
         fi
       done
     fi
@@ -457,7 +483,7 @@ probe_icmp() {
     # Wait for all probes and count successes
     for pid in "${pids[@]}"; do
       if wait "$pid"; then
-        ((ok++))
+        ((++ok))
       fi
     done
   fi
@@ -571,8 +597,15 @@ if [[ "$UPTIME_SEC" -lt 600 ]]; then
 fi
 
 # State tracking
-DOWN_START=-1      # Timestamp when outage started (-1 = currently up)
-LAST_REBOOT=0      # Timestamp of last reboot (for cooldown enforcement)
+#
+# DOWN_START (outage start, -1 = currently up) and LAST_REBOOT (for cooldown)
+# are restored by load_metrics() so a service restart cannot reset an
+# in-progress outage timer or bypass the cooldown. load_metrics() already
+# discarded them if the boot ID changed, so anything surviving here belongs to
+# the current boot.
+if (( DOWN_START != -1 )); then
+  log "Resuming in-progress outage started $(($(now) - DOWN_START))s ago"
+fi
 
 # Initialize health report schedule only if enabled
 if (( WEBHOOK_HEALTH_INTERVAL > 0 )); then
@@ -603,6 +636,7 @@ while true; do
       increment_metric "downtime" "$OUTAGE_DURATION"
       send_webhook "recovery" "WAN connectivity restored after ${OUTAGE_DURATION}s outage" "$OUTAGE_DURATION"
       DOWN_START=-1
+      save_metrics
     fi
   else
     # WAN is down
@@ -610,7 +644,7 @@ while true; do
       # Outage just started
       DOWN_START=$(now)
       log "WAN appears down; starting outage timer"
-      increment_metric "outages"
+      increment_metric "outages"  # also persists DOWN_START via save_metrics
       send_webhook "down" "WAN connectivity lost, monitoring for ${DOWN_WINDOW_SECONDS}s threshold" "0"
     else
       # Outage continuing - check if threshold met
@@ -623,6 +657,7 @@ while true; do
         if (( TIME_SINCE_REBOOT >= COOLDOWN_SECONDS )); then
           # Ready to reboot
           LAST_REBOOT=$(now)
+          save_metrics
 
           if (( DRY_RUN == 1 )); then
             log "DRY_RUN: would reboot now (outage: ${CURRENT_OUTAGE}s >= ${DOWN_WINDOW_SECONDS}s)"
@@ -649,7 +684,20 @@ while true; do
   if (( WEBHOOK_HEALTH_INTERVAL > 0 )) && (( $(now) >= NEXT_HEALTH_REPORT )); then
     UPTIME_HOURS=$(( $(/usr/bin/cut -d. -f1 /proc/uptime) / 3600 ))
     DOWNTIME_HOURS=$((TOTAL_DOWNTIME_SECONDS / 3600))
-    AVAILABILITY_PCT=$(( (TOTAL_DOWNTIME_SECONDS > 0) ? (100 - (TOTAL_DOWNTIME_SECONDS * 100 / ($(now) - SERVICE_START_TIME))) : 100 ))
+
+    # Guard the divisor: service runtime is 0 if the report fires on the first
+    # pass, and a division by zero is fatal under `set -e`.
+    SERVICE_RUNTIME=$(($(now) - SERVICE_START_TIME))
+    if (( SERVICE_RUNTIME > 0 )) && (( TOTAL_DOWNTIME_SECONDS > 0 )); then
+      AVAILABILITY_PCT=$(( 100 - (TOTAL_DOWNTIME_SECONDS * 100 / SERVICE_RUNTIME) ))
+      # Clamp: downtime carried over from previous runs can exceed this
+      # service's runtime and drive the percentage negative.
+      if (( AVAILABILITY_PCT < 0 )); then
+        AVAILABILITY_PCT=0
+      fi
+    else
+      AVAILABILITY_PCT=100
+    fi
 
     HEALTH_MSG="Health report: uptime ${UPTIME_HOURS}h, ${TOTAL_OUTAGES} outages (${TOTAL_RECOVERIES} recoveries), ${TOTAL_REBOOTS} reboots, ${DOWNTIME_HOURS}h total downtime, ${AVAILABILITY_PCT}% availability"
     send_webhook "health" "$HEALTH_MSG" "0"

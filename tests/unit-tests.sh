@@ -47,6 +47,10 @@ else
   exit 1
 fi
 
+# Repository paths (allows running the harness from anywhere)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+AGENT_SCRIPT="$SCRIPT_DIR/../src/netwatch-agent.sh"
+
 # Test framework state
 TESTS_RUN=0
 TESTS_PASSED=0
@@ -456,6 +460,98 @@ test_boot_grace_calculation() {
 }
 
 #
+# Regression Tests (errexit safety)
+#
+
+# Regression: `set -Eeuo pipefail` + post-increment `((var++))` kills the script.
+# When var is 0, `((var++))` evaluates to 0 and returns exit status 1, which
+# errexit treats as fatal. This crashed the agent on the FIRST successful probe
+# after startup, causing a silent restart loop (observed in production: a new
+# PID every ~30 minutes with a phantom multi-day outage timer).
+# Counters must use the pre-increment form `((++var))` instead.
+test_errexit_safe_increment() {
+  test_start "Regression: counter increment from zero survives errexit"
+
+  local result
+  result=$(
+    bash -c '
+      set -Eeuo pipefail
+      ok=0
+      ((++ok))
+      echo "$ok"
+    ' 2>/dev/null
+  ) || true
+
+  if [[ "$result" == "1" ]]; then
+    test_pass
+  else
+    test_fail "Pre-increment from zero did not survive errexit (got '$result')"
+  fi
+}
+
+# Guard against the unsafe form being reintroduced into the agent source.
+test_no_post_increment_in_agent() {
+  test_start "Regression: agent source contains no errexit-unsafe increments"
+
+  if [[ ! -f "$AGENT_SCRIPT" ]]; then
+    test_fail "Agent script not found: $AGENT_SCRIPT"
+    return
+  fi
+
+  # Match `((name++))` / `((name--))` not guarded by `|| true`
+  local hits
+  hits=$(grep -nE '\(\([A-Za-z_][A-Za-z0-9_]*(\+\+|--)\)\)' "$AGENT_SCRIPT" \
+    | grep -v '|| true' || true)
+
+  if [[ -z "$hits" ]]; then
+    test_pass
+  else
+    test_fail "Found errexit-unsafe increment(s): $hits"
+  fi
+}
+
+# Execute each counter-increment line lifted verbatim from the agent under the
+# same `set -Eeuo pipefail` the agent uses, with the counter starting at zero.
+# This exercises the real source text rather than a reimplementation, so the
+# post-increment bug is caught even on hosts where the probe path itself cannot
+# run (e.g. no /bin/ping available in the test environment).
+test_agent_increment_lines_survive_errexit() {
+  test_start "Regression: agent increment lines survive errexit at zero"
+
+  if [[ ! -f "$AGENT_SCRIPT" ]]; then
+    test_fail "Agent script not found: $AGENT_SCRIPT"
+    return
+  fi
+
+  # Pull every bare arithmetic-increment statement out of the agent source
+  local -a lines=()
+  while IFS= read -r stmt; do
+    [[ -n "$stmt" ]] && lines+=("$stmt")
+  done < <(grep -oE '\(\(\+\+?[A-Za-z_][A-Za-z0-9_]*\+?\+?\)\)' "$AGENT_SCRIPT" | sort -u)
+
+  if (( ${#lines[@]} == 0 )); then
+    test_fail "No increment statements found in agent source (grep too narrow?)"
+    return
+  fi
+
+  local stmt failed=""
+  for stmt in "${lines[@]}"; do
+    # Reconstruct the counter name and run the statement from zero under errexit
+    local var
+    var=$(echo "$stmt" | grep -oE '[A-Za-z_][A-Za-z0-9_]*')
+    if ! bash -c "set -Eeuo pipefail; $var=0; $stmt; exit 0" 2>/dev/null; then
+      failed+="$stmt "
+    fi
+  done
+
+  if [[ -z "$failed" ]]; then
+    test_pass
+  else
+    test_fail "Increment statement(s) died under errexit when counter was 0: $failed"
+  fi
+}
+
+#
 # TCP Health Check Tests
 #
 
@@ -843,6 +939,11 @@ test_min_ok_threshold
 test_outage_timer_logic
 test_cooldown_enforcement
 test_boot_grace_calculation
+
+# Regression tests (errexit safety)
+test_errexit_safe_increment
+test_no_post_increment_in_agent
+test_agent_increment_lines_survive_errexit
 
 # TCP health check tests
 test_tcp_all_targets_up

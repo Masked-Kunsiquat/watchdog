@@ -23,17 +23,38 @@ CONFIG_FILE="/etc/default/netwatch-agent"
 CONFIG_NEW="/etc/default/netwatch-agent.new"
 SYSTEMD_UNIT="/etc/systemd/system/netwatch-agent.service"
 STATE_DIR="/run/netwatch-agent"
+PERSIST_DIR="/var/lib/netwatch-agent"
+
+# NIC health sampler
+NETPROBE_SCRIPT="/usr/local/sbin/netwatch-netprobe.sh"
+NETPROBE_CONFIG="/etc/default/netwatch-netprobe"
+NETPROBE_CONFIG_NEW="/etc/default/netwatch-netprobe.new"
+NETPROBE_UNIT="/etc/systemd/system/netwatch-netprobe.service"
+NETPROBE_TIMER="/etc/systemd/system/netwatch-netprobe.timer"
+NETPROBE_LOGROTATE="/etc/logrotate.d/netwatch-netprobe"
+NETPROBE_STATE_DIR="/run/netwatch-netprobe"
+NETPROBE_LOG_DIR="/var/log/netwatch"
 
 # Parse options
 KEEP_CONFIG=false
+PURGE_DATA=false
 while [[ $# -gt 0 ]]; do
   case $1 in
     --keep-config)
       KEEP_CONFIG=true
       shift
       ;;
+    --purge-data)
+      # Also delete /var/lib/netwatch-agent and /var/log/netwatch. These hold
+      # outage evidence, so they are preserved unless this is given.
+      PURGE_DATA=true
+      shift
+      ;;
     *)
-      echo "Usage: $0 [--keep-config]"
+      echo "Usage: $0 [--keep-config] [--purge-data]"
+      echo
+      echo "  --keep-config  Preserve configuration files"
+      echo "  --purge-data   Also delete collected diagnostic logs and state"
       exit 1
       ;;
   esac
@@ -80,6 +101,16 @@ fi
 #
 # Stop and disable service
 #
+
+if $SUDO /usr/bin/systemctl is-active --quiet netwatch-netprobe.timer 2>/dev/null; then
+  log_info "Stopping netwatch-netprobe timer"
+  $SUDO /usr/bin/systemctl stop netwatch-netprobe.timer
+fi
+
+if $SUDO /usr/bin/systemctl is-enabled --quiet netwatch-netprobe.timer 2>/dev/null; then
+  log_info "Disabling netwatch-netprobe timer"
+  $SUDO /usr/bin/systemctl disable netwatch-netprobe.timer
+fi
 
 if $SUDO /usr/bin/systemctl is-active --quiet netwatch-agent 2>/dev/null; then
   log_info "Stopping netwatch-agent service"
@@ -156,6 +187,56 @@ fi
 if [[ -d "$STATE_DIR" ]]; then
   log_info "Cleaning state directory: $STATE_DIR"
   $SUDO rm -rf "$STATE_DIR"
+fi
+
+if [[ -d "$NETPROBE_STATE_DIR" ]]; then
+  log_info "Cleaning sampler state directory: $NETPROBE_STATE_DIR"
+  $SUDO rm -rf "$NETPROBE_STATE_DIR"
+fi
+
+#
+# Remove NIC health sampler files
+#
+
+for f in "$NETPROBE_SCRIPT" "$NETPROBE_UNIT" "$NETPROBE_TIMER" \
+         "$NETPROBE_LOGROTATE" "$NETPROBE_CONFIG_NEW"; do
+  if [[ -f "$f" ]]; then
+    log_info "Removing: $f"
+    $SUDO rm -f "$f"
+  fi
+done
+
+if [[ "$KEEP_CONFIG" == true ]]; then
+  if [[ -f "$NETPROBE_CONFIG" ]]; then
+    log_info "Preserving sampler config: $NETPROBE_CONFIG"
+  fi
+elif [[ -f "$NETPROBE_CONFIG" ]]; then
+  log_info "Removing sampler config: $NETPROBE_CONFIG"
+  $SUDO rm -f "$NETPROBE_CONFIG"
+fi
+
+#
+# Persistent state and collected evidence
+#
+# Diagnostic logs are deliberately NOT removed by default: they may be the only
+# record of a past outage. Pass --purge-data to delete them.
+#
+
+if [[ "$PURGE_DATA" == true ]]; then
+  if [[ -d "$PERSIST_DIR" ]]; then
+    log_info "Removing persistent state: $PERSIST_DIR"
+    $SUDO rm -rf "$PERSIST_DIR"
+  fi
+  if [[ -d "$NETPROBE_LOG_DIR" ]]; then
+    log_info "Removing collected NIC logs: $NETPROBE_LOG_DIR"
+    $SUDO rm -rf "$NETPROBE_LOG_DIR"
+  fi
+else
+  if [[ -d "$PERSIST_DIR" ]] || [[ -d "$NETPROBE_LOG_DIR" ]]; then
+    log_info "Preserving diagnostic data (use --purge-data to remove):"
+    [[ -d "$PERSIST_DIR" ]] && echo "    $PERSIST_DIR"
+    [[ -d "$NETPROBE_LOG_DIR" ]] && echo "    $NETPROBE_LOG_DIR"
+  fi
 fi
 
 #
