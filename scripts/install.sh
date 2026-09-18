@@ -24,11 +24,28 @@ PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 AGENT_SCRIPT="/usr/local/sbin/netwatch-agent.sh"
 CONFIG_FILE="/etc/default/netwatch-agent"
 SYSTEMD_UNIT="/etc/systemd/system/netwatch-agent.service"
+PERSIST_DIR="/var/lib/netwatch-agent"
+
+# NIC health sampler (optional companion component)
+NETPROBE_SCRIPT="/usr/local/sbin/netwatch-netprobe.sh"
+NETPROBE_CONFIG="/etc/default/netwatch-netprobe"
+NETPROBE_UNIT="/etc/systemd/system/netwatch-netprobe.service"
+NETPROBE_TIMER="/etc/systemd/system/netwatch-netprobe.timer"
+NETPROBE_LOGROTATE="/etc/logrotate.d/netwatch-netprobe"
+NETPROBE_LOG_DIR="/var/log/netwatch"
 
 # Source files
 SRC_AGENT="$PROJECT_ROOT/src/netwatch-agent.sh"
 SRC_CONFIG="$PROJECT_ROOT/config/netwatch-agent.conf"
 SRC_UNIT="$PROJECT_ROOT/config/netwatch-agent.service"
+SRC_NETPROBE="$PROJECT_ROOT/src/netwatch-netprobe.sh"
+SRC_NETPROBE_CONFIG="$PROJECT_ROOT/config/netwatch-netprobe.conf"
+SRC_NETPROBE_UNIT="$PROJECT_ROOT/config/netwatch-netprobe.service"
+SRC_NETPROBE_TIMER="$PROJECT_ROOT/config/netwatch-netprobe.timer"
+SRC_NETPROBE_LOGROTATE="$PROJECT_ROOT/config/netwatch-netprobe.logrotate"
+
+# Install the NIC sampler unless explicitly disabled: INSTALL_NETPROBE=0
+INSTALL_NETPROBE="${INSTALL_NETPROBE:-1}"
 
 #
 # Utility functions
@@ -134,6 +151,68 @@ $SUDO chmod 0644 "$SYSTEMD_UNIT"
 $SUDO chown root:root "$SYSTEMD_UNIT"
 
 #
+# Create persistent state directory
+#
+# The agent creates this at runtime, but creating it here means correct
+# ownership from the start and gives the uninstaller something to clean up.
+#
+
+log_info "Creating state directory $PERSIST_DIR"
+$SUDO mkdir -p "$PERSIST_DIR"
+$SUDO chmod 0750 "$PERSIST_DIR"
+$SUDO chown root:root "$PERSIST_DIR"
+
+#
+# Install NIC health sampler (optional companion)
+#
+
+if [[ "$INSTALL_NETPROBE" == "1" ]] && [[ -f "$SRC_NETPROBE" ]]; then
+  log_info "Installing NIC health sampler"
+
+  $SUDO cp "$SRC_NETPROBE" "$NETPROBE_SCRIPT"
+  $SUDO chmod 0755 "$NETPROBE_SCRIPT"
+  $SUDO chown root:root "$NETPROBE_SCRIPT"
+
+  if [[ -f "$NETPROBE_CONFIG" ]]; then
+    log_warn "Sampler config exists, preserving: $NETPROBE_CONFIG"
+    $SUDO cp "$SRC_NETPROBE_CONFIG" "${NETPROBE_CONFIG}.new"
+    $SUDO chmod 0640 "${NETPROBE_CONFIG}.new"
+    $SUDO chown root:root "${NETPROBE_CONFIG}.new"
+  else
+    $SUDO cp "$SRC_NETPROBE_CONFIG" "$NETPROBE_CONFIG"
+    $SUDO chmod 0640 "$NETPROBE_CONFIG"
+    $SUDO chown root:root "$NETPROBE_CONFIG"
+  fi
+
+  $SUDO cp "$SRC_NETPROBE_UNIT" "$NETPROBE_UNIT"
+  $SUDO chmod 0644 "$NETPROBE_UNIT"
+  $SUDO chown root:root "$NETPROBE_UNIT"
+
+  $SUDO cp "$SRC_NETPROBE_TIMER" "$NETPROBE_TIMER"
+  $SUDO chmod 0644 "$NETPROBE_TIMER"
+  $SUDO chown root:root "$NETPROBE_TIMER"
+
+  $SUDO mkdir -p "$NETPROBE_LOG_DIR"
+  $SUDO chmod 0755 "$NETPROBE_LOG_DIR"
+  $SUDO chown root:root "$NETPROBE_LOG_DIR"
+
+  if [[ -d /etc/logrotate.d ]]; then
+    $SUDO cp "$SRC_NETPROBE_LOGROTATE" "$NETPROBE_LOGROTATE"
+    $SUDO chmod 0644 "$NETPROBE_LOGROTATE"
+    $SUDO chown root:root "$NETPROBE_LOGROTATE"
+  else
+    log_warn "/etc/logrotate.d not found - the sampler log will not be rotated"
+  fi
+
+  if ! command -v ethtool >/dev/null 2>&1; then
+    log_warn "ethtool not found - the sampler needs it for driver counters"
+    log_info "Install it with: apt-get install ethtool"
+  fi
+else
+  log_info "Skipping NIC health sampler (INSTALL_NETPROBE=0)"
+fi
+
+#
 # Check for fping (optional but recommended)
 #
 
@@ -158,6 +237,11 @@ $SUDO /usr/bin/systemctl daemon-reload
 log_info "Enabling netwatch-agent service"
 $SUDO /usr/bin/systemctl enable netwatch-agent
 
+if [[ "$INSTALL_NETPROBE" == "1" ]] && [[ -f "$NETPROBE_TIMER" ]]; then
+  log_info "Enabling netwatch-netprobe timer"
+  $SUDO /usr/bin/systemctl enable --now netwatch-netprobe.timer
+fi
+
 # Check if service is already running
 if $SUDO /usr/bin/systemctl is-active --quiet netwatch-agent; then
   log_info "Service is already running, restarting"
@@ -179,8 +263,17 @@ echo "Service status:"
 $SUDO /usr/bin/systemctl status netwatch-agent --no-pager --lines=5 || true
 
 echo
+if [[ "$INSTALL_NETPROBE" == "1" ]] && [[ -f "$NETPROBE_SCRIPT" ]]; then
+  echo
+  echo "NIC health sampler:"
+  $SUDO /usr/bin/systemctl list-timers netwatch-netprobe --no-pager 2>/dev/null | head -3 || true
+fi
+
+echo
 echo "Quick reference:"
 echo "  - View logs:      journalctl -u netwatch-agent -f"
+echo "  - NIC samples:    journalctl -t netwatch-netprobe -f"
+echo "  - NIC anomalies:  journalctl -t netwatch-netprobe -p crit --no-pager"
 echo "  - Stop service:   /usr/bin/systemctl stop netwatch-agent"
 echo "  - Disable:        /usr/bin/systemctl disable netwatch-agent"
 echo "  - Pause watchdog: touch /etc/netwatch-agent.disable"

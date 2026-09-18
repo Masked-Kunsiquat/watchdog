@@ -28,6 +28,13 @@ Build a **robust WAN watchdog** that reboots the host after a strict, configurab
 - DNS/HTTP layer checks (initial release is ICMP reachability)
 - Long-running alerting stack (journald/syslog only; forwarders later)
 
+> **Note (v1.1.0).** The NIC health sampler writes a plain-text mirror to
+> `/var/log/netwatch/net-health.log` in addition to journald. This does not
+> relax the non-goal above: the journal remains authoritative, the file is a
+> convenience for `tail`/`grep` correlation, it is rotated by logrotate, and it
+> can be disabled entirely with `NETPROBE_LOG_TO_FILE=0`. No log shipping,
+> forwarding, or external alerting stack is implied.
+
 ---
 
 ## 3) Requirements

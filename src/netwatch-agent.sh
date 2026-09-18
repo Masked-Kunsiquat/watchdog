@@ -100,14 +100,81 @@ load_metrics() {
   LAST_HEALTH_REPORT=0
   SERVICE_START_TIME=$(now)
 
+  # First time this agent ever ran. TOTAL_DOWNTIME_SECONDS is cumulative across
+  # restarts, so availability must be measured against the same cumulative
+  # window - using the current session's runtime instead would mix a lifetime
+  # numerator with a per-session denominator.
+  TRACKING_SINCE=0
+
+  # Outage state persists across service restarts so a crash-restart cannot
+  # silently reset an in-progress outage timer or bypass the reboot cooldown.
+  DOWN_START=-1
+  LAST_REBOOT=0
+  BOOT_ID=""
+
   # Load from file if exists
   if [[ -f "$METRICS_FILE" ]]; then
     # shellcheck disable=SC1090
     . "$METRICS_FILE" 2>/dev/null || true
   fi
 
+  # The metrics file is sourced, so a truncated or hand-edited file can leave a
+  # field holding text, a negative number, or an absurd value. Every arithmetic
+  # context below runs under `set -u`, where (( VAR != 0 )) on a non-numeric
+  # value treats the contents as a variable name and aborts the script.
+  #
+  # Validation is field-specific rather than a blanket integer check:
+  #   - Only DOWN_START may be negative, and only as the -1 "up" sentinel. A
+  #     negative TOTAL_DOWNTIME_SECONDS would otherwise yield an availability
+  #     above 100%.
+  #   - Values are bounded so later arithmetic cannot overflow. Availability
+  #     computes TOTAL_DOWNTIME_SECONDS * 100, so that field is capped well
+  #     below INT64_MAX/100; anything larger is corruption, not a real duration
+  #     (the cap is still ~31 million years).
+  local field default value max
+  for field in TOTAL_REBOOTS TOTAL_OUTAGES TOTAL_RECOVERIES \
+               TOTAL_DOWNTIME_SECONDS LAST_HEALTH_REPORT LAST_REBOOT \
+               TRACKING_SINCE SERVICE_START_TIME DOWN_START; do
+    default=0
+    max=999999999999          # ~31,700 years in seconds; generous but finite
+    [[ "$field" == "DOWN_START" ]] && default=-1
+
+    value="${!field}"
+
+    if [[ "$field" == "DOWN_START" ]] && [[ "$value" == "-1" ]]; then
+      continue                # the documented "currently up" sentinel
+    fi
+
+    if [[ ! "$value" =~ ^[0-9]{1,12}$ ]] || (( 10#$value > max )); then
+      log "WARNING: $METRICS_FILE has invalid $field='$value'; resetting to $default"
+      printf -v "$field" '%s' "$default"
+    fi
+  done
+
+  # Outage state is only meaningful within a single boot. A saved DOWN_START
+  # from a previous boot would otherwise be measured against the current clock
+  # and report a multi-day phantom outage, so discard it when the boot changes.
+  local current_boot_id=""
+  if [[ -r /proc/sys/kernel/random/boot_id ]]; then
+    current_boot_id=$(< /proc/sys/kernel/random/boot_id)
+  fi
+
+  if [[ "$BOOT_ID" != "$current_boot_id" ]]; then
+    if (( DOWN_START != -1 )) || (( LAST_REBOOT != 0 )); then
+      log "New boot detected; discarding outage state from previous boot"
+    fi
+    DOWN_START=-1
+    LAST_REBOOT=0
+    BOOT_ID="$current_boot_id"
+  fi
+
   # Always reset service runtime to current start (counters remain persistent)
   SERVICE_START_TIME=$(now)
+
+  # Seed the cumulative tracking window on first ever run
+  if (( TRACKING_SINCE == 0 )); then
+    TRACKING_SINCE=$SERVICE_START_TIME
+  fi
 }
 
 save_metrics() {
@@ -118,6 +185,10 @@ TOTAL_RECOVERIES=$TOTAL_RECOVERIES
 TOTAL_DOWNTIME_SECONDS=$TOTAL_DOWNTIME_SECONDS
 LAST_HEALTH_REPORT=$LAST_HEALTH_REPORT
 SERVICE_START_TIME=$SERVICE_START_TIME
+DOWN_START=$DOWN_START
+LAST_REBOOT=$LAST_REBOOT
+BOOT_ID=$BOOT_ID
+TRACKING_SINCE=$TRACKING_SINCE
 EOF
   /bin/chmod 0600 "$METRICS_FILE" 2>/dev/null || true
   /bin/chown root:root "$METRICS_FILE" 2>/dev/null || true
@@ -309,7 +380,7 @@ probe_tcp() {
   # Count successes
   for tmp_file in "${tmp_files[@]}"; do
     if [[ -f "$tmp_file" ]] && [[ "$(<"$tmp_file")" == "ok" ]]; then
-      ((ok++))
+      ((++ok))
     fi
     /bin/rm -f "$tmp_file" 2>/dev/null || true
   done
@@ -370,7 +441,7 @@ probe_http() {
   # Count successes
   for tmp_file in "${tmp_files[@]}"; do
     if [[ -f "$tmp_file" ]] && [[ "$(<"$tmp_file")" == "ok" ]]; then
-      ((ok++))
+      ((++ok))
     fi
     /bin/rm -f "$tmp_file" 2>/dev/null || true
   done
@@ -419,12 +490,16 @@ probe_icmp() {
     # Parse fping summary lines: look for "xmt/rcv/%loss" with rcv >= 1
     while IFS= read -r line; do
       [[ "$line" == *"xmt/rcv/%loss"* ]] || continue
-      # Extract received count (format: "host : xmt/rcv/%loss = X/Y/Z%")
-      if [[ "$line" =~ :\ ([0-9]+)/([0-9]+)/ ]]; then
+      # Extract the received count. The real format is:
+      #   1.1.1.1 : xmt/rcv/%loss = 3/3/0%, min/avg/max = 22.4/24.0/27.3
+      # so the counts follow "= ", NOT the colon - the colon is followed by the
+      # literal text "xmt/rcv/%loss". Anchoring on ": " never matched, so every
+      # probe counted as a failure even when all targets replied.
+      if [[ "$line" =~ =\ ([0-9]+)/([0-9]+)/ ]]; then
         local rcv="${BASH_REMATCH[2]}"
         if (( rcv >= 1 )); then
-          ((ok++))
-          ((fping_ok++))
+          ((++ok))
+          ((++fping_ok))
         fi
       fi
     done <<<"$output"
@@ -440,7 +515,7 @@ probe_icmp() {
       done
       for pid in "${pids[@]}"; do
         if wait "$pid"; then
-          ((ok++))
+          ((++ok))
         fi
       done
     fi
@@ -457,7 +532,7 @@ probe_icmp() {
     # Wait for all probes and count successes
     for pid in "${pids[@]}"; do
       if wait "$pid"; then
-        ((ok++))
+        ((++ok))
       fi
     done
   fi
@@ -571,8 +646,19 @@ if [[ "$UPTIME_SEC" -lt 600 ]]; then
 fi
 
 # State tracking
-DOWN_START=-1      # Timestamp when outage started (-1 = currently up)
-LAST_REBOOT=0      # Timestamp of last reboot (for cooldown enforcement)
+#
+# DOWN_START (outage start, -1 = currently up) and LAST_REBOOT (for cooldown)
+# are restored by load_metrics() so a service restart cannot reset an
+# in-progress outage timer or bypass the cooldown. load_metrics() already
+# discarded them if the boot ID changed, so anything surviving here belongs to
+# the current boot.
+if (( DOWN_START != -1 )); then
+  # Restate the down condition on resume. Without this an outage that spans a
+  # service restart would never be announced in the journal: the loop would go
+  # straight to "outage continuing" because DOWN_START is already set, and the
+  # "WAN appears down" transition log would never fire for that outage.
+  log "WAN appears down; resuming in-progress outage started $(($(now) - DOWN_START))s ago"
+fi
 
 # Initialize health report schedule only if enabled
 if (( WEBHOOK_HEALTH_INTERVAL > 0 )); then
@@ -603,6 +689,7 @@ while true; do
       increment_metric "downtime" "$OUTAGE_DURATION"
       send_webhook "recovery" "WAN connectivity restored after ${OUTAGE_DURATION}s outage" "$OUTAGE_DURATION"
       DOWN_START=-1
+      save_metrics
     fi
   else
     # WAN is down
@@ -610,7 +697,7 @@ while true; do
       # Outage just started
       DOWN_START=$(now)
       log "WAN appears down; starting outage timer"
-      increment_metric "outages"
+      increment_metric "outages"  # also persists DOWN_START via save_metrics
       send_webhook "down" "WAN connectivity lost, monitoring for ${DOWN_WINDOW_SECONDS}s threshold" "0"
     else
       # Outage continuing - check if threshold met
@@ -623,6 +710,7 @@ while true; do
         if (( TIME_SINCE_REBOOT >= COOLDOWN_SECONDS )); then
           # Ready to reboot
           LAST_REBOOT=$(now)
+          save_metrics
 
           if (( DRY_RUN == 1 )); then
             log "DRY_RUN: would reboot now (outage: ${CURRENT_OUTAGE}s >= ${DOWN_WINDOW_SECONDS}s)"
@@ -649,7 +737,22 @@ while true; do
   if (( WEBHOOK_HEALTH_INTERVAL > 0 )) && (( $(now) >= NEXT_HEALTH_REPORT )); then
     UPTIME_HOURS=$(( $(/usr/bin/cut -d. -f1 /proc/uptime) / 3600 ))
     DOWNTIME_HOURS=$((TOTAL_DOWNTIME_SECONDS / 3600))
-    AVAILABILITY_PCT=$(( (TOTAL_DOWNTIME_SECONDS > 0) ? (100 - (TOTAL_DOWNTIME_SECONDS * 100 / ($(now) - SERVICE_START_TIME))) : 100 ))
+
+    # Measure availability over the same window the downtime was accumulated in.
+    # TOTAL_DOWNTIME_SECONDS is cumulative across restarts, so dividing it by the
+    # current session's runtime would understate availability after any restart
+    # (and pin it to 0% once cumulative downtime exceeds a fresh session).
+    # Guard the divisor: it is 0 on the very first pass, and division by zero is
+    # fatal under `set -e`.
+    TRACKED_SECONDS=$(($(now) - TRACKING_SINCE))
+    if (( TRACKED_SECONDS > 0 )) && (( TOTAL_DOWNTIME_SECONDS > 0 )); then
+      AVAILABILITY_PCT=$(( 100 - (TOTAL_DOWNTIME_SECONDS * 100 / TRACKED_SECONDS) ))
+      if (( AVAILABILITY_PCT < 0 )); then
+        AVAILABILITY_PCT=0
+      fi
+    else
+      AVAILABILITY_PCT=100
+    fi
 
     HEALTH_MSG="Health report: uptime ${UPTIME_HOURS}h, ${TOTAL_OUTAGES} outages (${TOTAL_RECOVERIES} recoveries), ${TOTAL_REBOOTS} reboots, ${DOWNTIME_HOURS}h total downtime, ${AVAILABILITY_PCT}% availability"
     send_webhook "health" "$HEALTH_MSG" "0"

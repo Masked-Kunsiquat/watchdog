@@ -27,6 +27,11 @@ debian/netwatch-agent/
 # Logs
 *.log
 
+# Host diagnostic captures (may contain MACs, IPs, hostnames)
+netwatch-baseline.txt
+netwatch-history.txt
+netwatch-*.txt
+
 # Backup files
 *.bak
 *.backup

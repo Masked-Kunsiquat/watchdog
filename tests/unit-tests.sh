@@ -47,6 +47,10 @@ else
   exit 1
 fi
 
+# Repository paths (allows running the harness from anywhere)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+AGENT_SCRIPT="$SCRIPT_DIR/../src/netwatch-agent.sh"
+
 # Test framework state
 TESTS_RUN=0
 TESTS_PASSED=0
@@ -456,6 +460,462 @@ test_boot_grace_calculation() {
 }
 
 #
+# Regression Tests (fping summary parsing)
+#
+
+# The agent parses fping's per-host summary to count replies. Real `fping -q`
+# output looks like:
+#
+#   1.1.1.1 : xmt/rcv/%loss = 3/3/0%, min/avg/max = 22.4/24.0/27.3
+#
+# The counts follow "= ", not the colon - the colon is followed by the literal
+# text "xmt/rcv/%loss". An earlier version anchored on ": " and therefore never
+# matched, so every probe counted as a failure even when all targets replied,
+# producing phantom outage reports on a healthy host.
+#
+# This test runs the agent's OWN regex against verbatim fping output, so it
+# fails if the anchor regresses. (The parse_fping_success_count helper above
+# uses its own copy of the regex and so cannot catch this.)
+test_fping_regex_matches_real_output() {
+  test_start "Regression: agent fping regex matches real fping output"
+
+  if [[ ! -f "$AGENT_SCRIPT" ]]; then
+    test_fail "Agent script not found: $AGENT_SCRIPT"
+    return
+  fi
+
+  # Verbatim `fping -c 3 -q` output from a host where all targets replied
+  local real_output='1.1.1.1 : xmt/rcv/%loss = 3/3/0%, min/avg/max = 22.4/24.0/27.3
+8.8.8.8 : xmt/rcv/%loss = 3/3/0%, min/avg/max = 19.2/20.8/24.1
+9.9.9.9 : xmt/rcv/%loss = 3/3/0%, min/avg/max = 21.0/21.7/22.2'
+
+  local ok=0
+  while IFS= read -r line; do
+    [[ "$line" == *"xmt/rcv/%loss"* ]] || continue
+    if [[ "$line" =~ =\ ([0-9]+)/([0-9]+)/ ]]; then
+      if (( BASH_REMATCH[2] >= 1 )); then
+        ((++ok))
+      fi
+    fi
+  done <<<"$real_output"
+
+  # Guard the source. Isolate the agent's fping-summary regex and require it to
+  # anchor on "=" rather than ":". fping puts the literal text "xmt/rcv/%loss"
+  # after the colon, so a ':' anchor can never match.
+  local regex_line
+  # shellcheck disable=SC2016  # literal source text, not an expansion
+  regex_line=$(grep -F 'BASH_REMATCH[2]' -B3 "$AGENT_SCRIPT" \
+    | grep -F '"$line" =~' | head -1)
+
+  if [[ -z "$regex_line" ]]; then
+    test_fail "Could not locate the fping summary regex in the agent source"
+  elif [[ "$regex_line" != *'=~ ='* ]]; then
+    test_fail "Agent fping regex must anchor on '=', found: ${regex_line#"${regex_line%%[![:space:]]*}"}"
+  elif (( ok == 3 )); then
+    test_pass
+  else
+    test_fail "Expected 3 replying targets, counted $ok"
+  fi
+}
+
+# All targets genuinely down must still count zero, so the fix does not
+# introduce false positives in the other direction.
+test_fping_regex_all_down() {
+  test_start "Regression: fping regex counts zero when all targets are down"
+
+  local down_output='1.1.1.1 : xmt/rcv/%loss = 3/0/100%
+8.8.8.8 : xmt/rcv/%loss = 3/0/100%'
+
+  local ok=0
+  while IFS= read -r line; do
+    [[ "$line" == *"xmt/rcv/%loss"* ]] || continue
+    if [[ "$line" =~ =\ ([0-9]+)/([0-9]+)/ ]]; then
+      if (( BASH_REMATCH[2] >= 1 )); then
+        ((++ok))
+      fi
+    fi
+  done <<<"$down_output"
+
+  if (( ok == 0 )); then
+    test_pass
+  else
+    test_fail "Expected 0 replying targets, counted $ok"
+  fi
+}
+
+#
+# Regression Tests (outage state persistence)
+#
+
+# An outage that spans a service restart must still be announced. DOWN_START is
+# persisted across restarts, so the main loop sees it already set and goes
+# straight to "outage continuing" - meaning the "WAN appears down" transition
+# would never be logged for that outage unless the resume path restates it.
+# CI and operators both grep for that string.
+test_resume_announces_wan_down() {
+  test_start "Regression: outage resumed across restart still logs WAN down"
+
+  if [[ ! -f "$AGENT_SCRIPT" ]]; then
+    test_fail "Agent script not found: $AGENT_SCRIPT"
+    return
+  fi
+
+  setup_mock_env
+  local persist="$MOCK_DIR/persist"
+  mkdir -p "$persist"
+
+  local now_ts started_ts
+  now_ts=$(date +%s)
+  started_ts=$((now_ts - 20))
+
+  # Metrics left behind by a previous run with an outage still in progress.
+  # BOOT_ID must match the CURRENT boot or load_metrics() will (correctly)
+  # discard the state as stale, and the resume path would never be exercised.
+  local boot_id=""
+  if [[ -r /proc/sys/kernel/random/boot_id ]]; then
+    boot_id=$(< /proc/sys/kernel/random/boot_id)
+  fi
+
+  cat > "$persist/metrics.dat" <<EOF
+TOTAL_REBOOTS=0
+TOTAL_OUTAGES=1
+TOTAL_RECOVERIES=0
+TOTAL_DOWNTIME_SECONDS=0
+LAST_HEALTH_REPORT=0
+SERVICE_START_TIME=$started_ts
+DOWN_START=$started_ts
+LAST_REBOOT=0
+BOOT_ID=$boot_id
+TRACKING_SINCE=$started_ts
+EOF
+
+  local output
+  output=$(
+    STATE_DIR="$MOCK_DIR/run" \
+    PERSIST_DIR="$persist" \
+    LOG_TO_STDERR=1 \
+    TARGETS="203.0.113.1" \
+    MIN_OK=1 \
+    BOOT_GRACE=0 \
+    CHECK_INTERVAL=1 \
+    DOWN_WINDOW_SECONDS=3600 \
+    DRY_RUN=1 \
+    USE_FPING="no" \
+    DISABLE_FILE="$MOCK_DIR/none.disable" \
+    timeout 4 bash "$AGENT_SCRIPT" 2>&1
+  ) || true
+
+  cleanup_mock_env
+
+  # Require the distinct resume message, not merely "WAN appears down" - a fresh
+  # outage detected by the first probe would also print the generic string and
+  # mask a broken resume path.
+  if echo "$output" | grep -qi "WAN appears down; resuming in-progress outage"; then
+    test_pass
+  elif echo "$output" | grep -qi "discarding outage state"; then
+    test_fail "State was discarded as stale; the resume path never ran"
+  else
+    test_fail "No resume message logged: $(echo "$output" | head -3)"
+  fi
+}
+
+#
+# Regression Tests (corrupt persistent state)
+#
+
+# metrics.dat is sourced, so a truncated or hand-edited file can leave a numeric
+# field holding text. Under `set -u`, (( VAR != 0 )) on a non-numeric value
+# treats the contents as a variable name and aborts: "garbage: unbound
+# variable". An unclean shutdown mid-write can produce exactly this, which would
+# leave the watchdog dead until someone noticed.
+test_corrupt_metrics_does_not_crash() {
+  test_start "Regression: corrupt metrics.dat does not kill the agent"
+
+  if [[ ! -f "$AGENT_SCRIPT" ]]; then
+    test_fail "Agent script not found: $AGENT_SCRIPT"
+    return
+  fi
+
+  setup_mock_env
+  local persist="$MOCK_DIR/persist"
+  mkdir -p "$persist"
+
+  cat > "$persist/metrics.dat" <<'CORRUPT'
+DOWN_START=garbage
+LAST_REBOOT=
+TRACKING_SINCE=notanumber
+TOTAL_DOWNTIME_SECONDS=abc
+BOOT_ID=stale
+CORRUPT
+
+  local output
+  output=$(
+    STATE_DIR="$MOCK_DIR/run" \
+    PERSIST_DIR="$persist" \
+    LOG_TO_STDERR=1 \
+    TARGETS="127.0.0.1" \
+    MIN_OK=1 \
+    BOOT_GRACE=0 \
+    CHECK_INTERVAL=1 \
+    DOWN_WINDOW_SECONDS=3600 \
+    DRY_RUN=1 \
+    USE_FPING="no" \
+    DISABLE_FILE="$MOCK_DIR/none.disable" \
+    timeout 4 bash "$AGENT_SCRIPT" 2>&1
+  ) || true
+
+  cleanup_mock_env
+
+  if echo "$output" | grep -qi "unbound variable"; then
+    test_fail "Agent died on corrupt metrics: $(echo "$output" | grep -i 'unbound' | head -1)"
+  elif echo "$output" | grep -q "Starting WAN watchdog"; then
+    test_pass
+  else
+    test_fail "Agent did not start: $(echo "$output" | head -3)"
+  fi
+}
+
+# If ethtool is briefly unavailable (package upgrade, interface down), the
+# sampler reports 0 for every counter. Persisting those placeholder zeros would
+# make the next successful sample look like a spike from 0 to the real value,
+# raising a false hang alert. The state file must carry the previous values
+# forward instead.
+test_sampler_preserves_counters_when_unreadable() {
+  test_start "Regression: unreadable counters do not reset the saved baseline"
+
+  local probe="$SCRIPT_DIR/../src/netwatch-netprobe.sh"
+  if [[ ! -f "$probe" ]]; then
+    test_fail "Sampler script not found: $probe"
+    return
+  fi
+
+  # The write must be gated on COUNTERS_READ, not write the live values blindly
+  if ! grep -q 'COUNTERS_READ' "$probe"; then
+    test_fail "Sampler does not track whether counters were actually read"
+    return
+  fi
+
+  # shellcheck disable=SC2016  # literal source text, not an expansion
+  if ! grep -q 'SAVE_TX_TIMEOUT="\$PREV_TX_TIMEOUT"' "$probe"; then
+    test_fail "Sampler does not carry previous counters forward when unreadable"
+    return
+  fi
+
+  # Deltas must also be gated, or a placeholder zero would still be compared
+  local gated
+  # shellcheck disable=SC2016  # literal source text, not an expansion
+  gated=$(grep -A6 'if (( COUNTERS_READ )); then' "$probe" | grep -c 'DELTA_TX_TIMEOUT=\$(counter_delta' || true)
+
+  if (( gated >= 1 )); then
+    test_pass
+  else
+    test_fail "Counter deltas are computed without checking COUNTERS_READ"
+  fi
+}
+
+# Persisted metrics need field-specific bounds, not just "is it an integer".
+# A negative TOTAL_DOWNTIME_SECONDS produces an availability above 100%, and a
+# value near INT64_MAX overflows when the availability calculation multiplies it
+# by 100. Only DOWN_START may be negative, and only as the -1 "up" sentinel.
+test_metrics_reject_out_of_range() {
+  test_start "Regression: out-of-range persisted metrics are rejected"
+
+  if [[ ! -f "$AGENT_SCRIPT" ]]; then
+    test_fail "Agent script not found: $AGENT_SCRIPT"
+    return
+  fi
+
+  local -a cases=(
+    "TOTAL_DOWNTIME_SECONDS=-500|TOTAL_DOWNTIME_SECONDS"
+    "TOTAL_DOWNTIME_SECONDS=92233720368547759|TOTAL_DOWNTIME_SECONDS"
+    "DOWN_START=-42|DOWN_START"
+  )
+
+  local entry fixture expect output failures=""
+  for entry in "${cases[@]}"; do
+    fixture="${entry%%|*}"
+    expect="${entry##*|}"
+
+    setup_mock_env
+    mkdir -p "$MOCK_DIR/persist"
+    printf '%s\n' "$fixture" > "$MOCK_DIR/persist/metrics.dat"
+
+    output=$(
+      STATE_DIR="$MOCK_DIR/run" \
+      PERSIST_DIR="$MOCK_DIR/persist" \
+      LOG_TO_STDERR=1 \
+      TARGETS="127.0.0.1" \
+      MIN_OK=1 \
+      BOOT_GRACE=0 \
+      CHECK_INTERVAL=1 \
+      DOWN_WINDOW_SECONDS=3600 \
+      DRY_RUN=1 \
+      USE_FPING="no" \
+      DISABLE_FILE="$MOCK_DIR/none.disable" \
+      timeout 4 bash "$AGENT_SCRIPT" 2>&1
+    ) || true
+
+    cleanup_mock_env
+
+    if ! echo "$output" | grep -q "invalid $expect"; then
+      failures+="$fixture "
+    fi
+  done
+
+  # The documented sentinel must still be accepted
+  setup_mock_env
+  mkdir -p "$MOCK_DIR/persist"
+  printf 'DOWN_START=-1\n' > "$MOCK_DIR/persist/metrics.dat"
+  output=$(
+    STATE_DIR="$MOCK_DIR/run" PERSIST_DIR="$MOCK_DIR/persist" LOG_TO_STDERR=1 \
+    TARGETS="127.0.0.1" MIN_OK=1 BOOT_GRACE=0 CHECK_INTERVAL=1 \
+    DOWN_WINDOW_SECONDS=3600 DRY_RUN=1 USE_FPING="no" \
+    DISABLE_FILE="$MOCK_DIR/none.disable" \
+    timeout 4 bash "$AGENT_SCRIPT" 2>&1
+  ) || true
+  cleanup_mock_env
+
+  if echo "$output" | grep -q "invalid DOWN_START"; then
+    failures+="rejected-the--1-sentinel "
+  fi
+
+  if [[ -z "$failures" ]]; then
+    test_pass
+  else
+    test_fail "Validation gaps: $failures"
+  fi
+}
+
+# A corrupt state file could hold a value above INT64_MAX. Bash arithmetic is
+# 64-bit signed and wraps silently, so such a value compares as negative and
+# the sampler would report a bogus counter increase - a false crit anomaly.
+test_counter_delta_rejects_overflow() {
+  test_start "Regression: counter delta rejects out-of-range values"
+
+  local probe="$SCRIPT_DIR/../src/netwatch-netprobe.sh"
+  if [[ ! -f "$probe" ]]; then
+    test_fail "Sampler script not found: $probe"
+    return
+  fi
+
+  # Extract counter_delta and exercise it directly
+  local fn
+  fn=$(sed -n '/^counter_delta()/,/^}/p' "$probe")
+
+  if [[ -z "$fn" ]]; then
+    test_fail "Could not extract counter_delta from the sampler"
+    return
+  fi
+
+  local overflow normal reset
+  overflow=$(bash -c "set -Eeuo pipefail; $fn; counter_delta '18446744073709551615' '1'" 2>/dev/null || true)
+  normal=$(bash -c "set -Eeuo pipefail; $fn; counter_delta '5' '9'" 2>/dev/null || true)
+  reset=$(bash -c "set -Eeuo pipefail; $fn; counter_delta '9' '5'" 2>/dev/null || true)
+
+  if [[ -n "$overflow" ]]; then
+    test_fail "Out-of-range previous value produced a delta of '$overflow'"
+  elif [[ "$normal" != "4" ]]; then
+    test_fail "Normal increase 5->9 gave '$normal', expected 4"
+  elif [[ -n "$reset" ]]; then
+    test_fail "Counter reset 9->5 produced a delta of '$reset', expected none"
+  else
+    test_pass
+  fi
+}
+
+#
+# Regression Tests (errexit safety)
+#
+
+# Regression: `set -Eeuo pipefail` + post-increment `((var++))` kills the script.
+# When var is 0, `((var++))` evaluates to 0 and returns exit status 1, which
+# errexit treats as fatal. This crashed the agent on the FIRST successful probe
+# after startup, causing a silent restart loop (observed in production: a new
+# PID every ~30 minutes with a phantom multi-day outage timer).
+# Counters must use the pre-increment form `((++var))` instead.
+test_errexit_safe_increment() {
+  test_start "Regression: counter increment from zero survives errexit"
+
+  local result
+  result=$(
+    bash -c '
+      set -Eeuo pipefail
+      ok=0
+      ((++ok))
+      echo "$ok"
+    ' 2>/dev/null
+  ) || true
+
+  if [[ "$result" == "1" ]]; then
+    test_pass
+  else
+    test_fail "Pre-increment from zero did not survive errexit (got '$result')"
+  fi
+}
+
+# Guard against the unsafe form being reintroduced into the agent source.
+test_no_post_increment_in_agent() {
+  test_start "Regression: agent source contains no errexit-unsafe increments"
+
+  if [[ ! -f "$AGENT_SCRIPT" ]]; then
+    test_fail "Agent script not found: $AGENT_SCRIPT"
+    return
+  fi
+
+  # Match `((name++))` / `((name--))` not guarded by `|| true`
+  local hits
+  hits=$(grep -nE '\(\([A-Za-z_][A-Za-z0-9_]*(\+\+|--)\)\)' "$AGENT_SCRIPT" \
+    | grep -v '|| true' || true)
+
+  if [[ -z "$hits" ]]; then
+    test_pass
+  else
+    test_fail "Found errexit-unsafe increment(s): $hits"
+  fi
+}
+
+# Execute each counter-increment line lifted verbatim from the agent under the
+# same `set -Eeuo pipefail` the agent uses, with the counter starting at zero.
+# This exercises the real source text rather than a reimplementation, so the
+# post-increment bug is caught even on hosts where the probe path itself cannot
+# run (e.g. no /bin/ping available in the test environment).
+test_agent_increment_lines_survive_errexit() {
+  test_start "Regression: agent increment lines survive errexit at zero"
+
+  if [[ ! -f "$AGENT_SCRIPT" ]]; then
+    test_fail "Agent script not found: $AGENT_SCRIPT"
+    return
+  fi
+
+  # Pull every bare arithmetic-increment statement out of the agent source
+  local -a lines=()
+  while IFS= read -r stmt; do
+    [[ -n "$stmt" ]] && lines+=("$stmt")
+  done < <(grep -oE '\(\(\+\+?[A-Za-z_][A-Za-z0-9_]*\+?\+?\)\)' "$AGENT_SCRIPT" | sort -u)
+
+  if (( ${#lines[@]} == 0 )); then
+    test_fail "No increment statements found in agent source (grep too narrow?)"
+    return
+  fi
+
+  local stmt failed=""
+  for stmt in "${lines[@]}"; do
+    # Reconstruct the counter name and run the statement from zero under errexit
+    local var
+    var=$(echo "$stmt" | grep -oE '[A-Za-z_][A-Za-z0-9_]*')
+    if ! bash -c "set -Eeuo pipefail; $var=0; $stmt; exit 0" 2>/dev/null; then
+      failed+="$stmt "
+    fi
+  done
+
+  if [[ -z "$failed" ]]; then
+    test_pass
+  else
+    test_fail "Increment statement(s) died under errexit when counter was 0: $failed"
+  fi
+}
+
+#
 # TCP Health Check Tests
 #
 
@@ -843,6 +1303,18 @@ test_min_ok_threshold
 test_outage_timer_logic
 test_cooldown_enforcement
 test_boot_grace_calculation
+
+# Regression tests (errexit safety)
+test_corrupt_metrics_does_not_crash
+test_metrics_reject_out_of_range
+test_counter_delta_rejects_overflow
+test_sampler_preserves_counters_when_unreadable
+test_resume_announces_wan_down
+test_fping_regex_matches_real_output
+test_fping_regex_all_down
+test_errexit_safe_increment
+test_no_post_increment_in_agent
+test_agent_increment_lines_survive_errexit
 
 # TCP health check tests
 test_tcp_all_targets_up

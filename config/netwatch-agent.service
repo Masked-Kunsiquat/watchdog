@@ -1,8 +1,14 @@
 [Unit]
 Description=Netwatch WAN Watchdog (reboots host after continuous WAN loss)
-Documentation=https://github.com/netwatch/netwatch
+Documentation=https://github.com/Masked-Kunsiquat/watchdog
 After=network.target
 Wants=network-online.target
+
+# Surface crash-loops instead of restarting forever in silence. If the agent
+# exits more than 5 times in 5 minutes it is failing, not monitoring, and the
+# unit enters "failed" so `systemctl status` and alerting can see it.
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=notify

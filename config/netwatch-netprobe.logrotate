@@ -1,0 +1,19 @@
+# Logrotate config for the Netwatch NIC health sampler
+# Installed to /etc/logrotate.d/netwatch-netprobe
+#
+# `create` (the default) is correct here rather than `copytruncate`: the sampler
+# runs as a Type=oneshot unit that opens, appends, and exits on every sample, so
+# it picks up the newly created file on its next run. `copytruncate` is only
+# needed for long-running processes that hold the descriptor open, and it has a
+# race window where lines written during the copy are lost.
+
+/var/log/netwatch/net-health.log {
+    daily
+    rotate 28
+    size 20M
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0640 root adm
+}
