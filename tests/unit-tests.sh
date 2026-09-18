@@ -713,6 +713,79 @@ test_sampler_preserves_counters_when_unreadable() {
   fi
 }
 
+# Persisted metrics need field-specific bounds, not just "is it an integer".
+# A negative TOTAL_DOWNTIME_SECONDS produces an availability above 100%, and a
+# value near INT64_MAX overflows when the availability calculation multiplies it
+# by 100. Only DOWN_START may be negative, and only as the -1 "up" sentinel.
+test_metrics_reject_out_of_range() {
+  test_start "Regression: out-of-range persisted metrics are rejected"
+
+  if [[ ! -f "$AGENT_SCRIPT" ]]; then
+    test_fail "Agent script not found: $AGENT_SCRIPT"
+    return
+  fi
+
+  local -a cases=(
+    "TOTAL_DOWNTIME_SECONDS=-500|TOTAL_DOWNTIME_SECONDS"
+    "TOTAL_DOWNTIME_SECONDS=92233720368547759|TOTAL_DOWNTIME_SECONDS"
+    "DOWN_START=-42|DOWN_START"
+  )
+
+  local entry fixture expect output failures=""
+  for entry in "${cases[@]}"; do
+    fixture="${entry%%|*}"
+    expect="${entry##*|}"
+
+    setup_mock_env
+    mkdir -p "$MOCK_DIR/persist"
+    printf '%s\n' "$fixture" > "$MOCK_DIR/persist/metrics.dat"
+
+    output=$(
+      STATE_DIR="$MOCK_DIR/run" \
+      PERSIST_DIR="$MOCK_DIR/persist" \
+      LOG_TO_STDERR=1 \
+      TARGETS="127.0.0.1" \
+      MIN_OK=1 \
+      BOOT_GRACE=0 \
+      CHECK_INTERVAL=1 \
+      DOWN_WINDOW_SECONDS=3600 \
+      DRY_RUN=1 \
+      USE_FPING="no" \
+      DISABLE_FILE="$MOCK_DIR/none.disable" \
+      timeout 4 bash "$AGENT_SCRIPT" 2>&1
+    ) || true
+
+    cleanup_mock_env
+
+    if ! echo "$output" | grep -q "invalid $expect"; then
+      failures+="$fixture "
+    fi
+  done
+
+  # The documented sentinel must still be accepted
+  setup_mock_env
+  mkdir -p "$MOCK_DIR/persist"
+  printf 'DOWN_START=-1\n' > "$MOCK_DIR/persist/metrics.dat"
+  output=$(
+    STATE_DIR="$MOCK_DIR/run" PERSIST_DIR="$MOCK_DIR/persist" LOG_TO_STDERR=1 \
+    TARGETS="127.0.0.1" MIN_OK=1 BOOT_GRACE=0 CHECK_INTERVAL=1 \
+    DOWN_WINDOW_SECONDS=3600 DRY_RUN=1 USE_FPING="no" \
+    DISABLE_FILE="$MOCK_DIR/none.disable" \
+    timeout 4 bash "$AGENT_SCRIPT" 2>&1
+  ) || true
+  cleanup_mock_env
+
+  if echo "$output" | grep -q "invalid DOWN_START"; then
+    failures+="rejected-the--1-sentinel "
+  fi
+
+  if [[ -z "$failures" ]]; then
+    test_pass
+  else
+    test_fail "Validation gaps: $failures"
+  fi
+}
+
 # A corrupt state file could hold a value above INT64_MAX. Bash arithmetic is
 # 64-bit signed and wraps silently, so such a value compares as negative and
 # the sampler would report a bogus counter increase - a false crit anomaly.
@@ -1233,6 +1306,7 @@ test_boot_grace_calculation
 
 # Regression tests (errexit safety)
 test_corrupt_metrics_does_not_crash
+test_metrics_reject_out_of_range
 test_counter_delta_rejects_overflow
 test_sampler_preserves_counters_when_unreadable
 test_resume_announces_wan_down

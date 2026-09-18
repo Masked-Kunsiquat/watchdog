@@ -119,19 +119,34 @@ load_metrics() {
   fi
 
   # The metrics file is sourced, so a truncated or hand-edited file can leave a
-  # numeric field holding non-numeric text. Every arithmetic context below runs
-  # under `set -u`, where (( VAR != 0 )) on a non-numeric value treats the
-  # contents as a variable name and aborts the script. Reset anything that is
-  # not a plain integer back to its default.
-  local field default
+  # field holding text, a negative number, or an absurd value. Every arithmetic
+  # context below runs under `set -u`, where (( VAR != 0 )) on a non-numeric
+  # value treats the contents as a variable name and aborts the script.
+  #
+  # Validation is field-specific rather than a blanket integer check:
+  #   - Only DOWN_START may be negative, and only as the -1 "up" sentinel. A
+  #     negative TOTAL_DOWNTIME_SECONDS would otherwise yield an availability
+  #     above 100%.
+  #   - Values are bounded so later arithmetic cannot overflow. Availability
+  #     computes TOTAL_DOWNTIME_SECONDS * 100, so that field is capped well
+  #     below INT64_MAX/100; anything larger is corruption, not a real duration
+  #     (the cap is still ~31 million years).
+  local field default value max
   for field in TOTAL_REBOOTS TOTAL_OUTAGES TOTAL_RECOVERIES \
                TOTAL_DOWNTIME_SECONDS LAST_HEALTH_REPORT LAST_REBOOT \
                TRACKING_SINCE SERVICE_START_TIME DOWN_START; do
     default=0
+    max=999999999999          # ~31,700 years in seconds; generous but finite
     [[ "$field" == "DOWN_START" ]] && default=-1
 
-    if [[ ! "${!field}" =~ ^-?[0-9]+$ ]]; then
-      log "WARNING: $METRICS_FILE has invalid $field='${!field}'; resetting to $default"
+    value="${!field}"
+
+    if [[ "$field" == "DOWN_START" ]] && [[ "$value" == "-1" ]]; then
+      continue                # the documented "currently up" sentinel
+    fi
+
+    if [[ ! "$value" =~ ^[0-9]{1,12}$ ]] || (( 10#$value > max )); then
+      log "WARNING: $METRICS_FILE has invalid $field='$value'; resetting to $default"
       printf -v "$field" '%s' "$default"
     fi
   done

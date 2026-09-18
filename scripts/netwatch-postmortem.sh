@@ -217,7 +217,11 @@ generate_report() {
 if [[ -n "$OUTPUT" ]]; then
   # The report embeds journal excerpts, MAC addresses, and IPs. Create it
   # owner-readable only rather than inheriting a permissive default umask.
+  # umask applies to creation only, so chmod explicitly as well - re-running to
+  # an existing world-readable path would otherwise leave it exposed.
   ( umask 077; : > "$OUTPUT" )
+  /bin/chmod 0600 "$OUTPUT" 2>/dev/null || \
+    log_warn "Could not set 0600 on $OUTPUT; check permissions before sharing it"
   generate_report | /usr/bin/tee "$OUTPUT"
   echo
   log_info "Report written to $OUTPUT"

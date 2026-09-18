@@ -198,8 +198,14 @@ apply_runtime() {
       /bin/chmod 0600 "$snapshot" 2>/dev/null || true
       log_info "Saved pre-change offload state to $snapshot"
     else
+      # Without a snapshot, --revert-offloads has nothing to restore from, so
+      # applying now would leave a change that cannot be cleanly undone. Stop
+      # rather than proceed into an unrevertable state.
       /bin/rm -f "$snapshot" 2>/dev/null || true
-      log_warn "Could not snapshot current offload state"
+      log_error "Could not snapshot current offload state for $iface"
+      log_error "Refusing to apply: the change would not be revertable."
+      log_error "Check that '$ethtool_bin -k $iface' works and $BACKUP_DIR is writable."
+      return 1
     fi
   else
     log_info "Keeping existing snapshot $snapshot (from an earlier apply)"
@@ -492,7 +498,13 @@ case "$ACTION" in
     show_status "$IFACE" "$ETHTOOL_BIN"
     ;;
   apply)
-    apply_runtime "$IFACE" "$ETHTOOL_BIN"
+    # Stop before install_hook if the runtime change did not happen - a
+    # persistent hook for a change we could not apply or revert is worse than
+    # no change at all.
+    if ! apply_runtime "$IFACE" "$ETHTOOL_BIN"; then
+      log_error "Aborting: nothing was changed."
+      exit 1
+    fi
     install_hook "$IFACE" "$ETHTOOL_BIN"
     echo
     log_info "Applied. Verify with:"
