@@ -165,6 +165,40 @@ if [[ -f /usr/local/sbin/netwatch-netprobe.sh ]]; then
   [[ -n "${DIGEST_TIME:-}" ]] && echo "  digest at:   $DIGEST_TIME daily"
 fi
 
+# --- Config drift after an upgrade ---
+#
+# dpkg never merges config files: when a local edit collides with an upstream
+# change it prompts, and keeping your version means new settings are absent.
+# Nothing breaks - every key has a default - but the features behind them stay
+# silently off, which is how a requested feature can ship and still not work.
+DRIFT=""
+for LIVE in "$CONFIG_FILE" "$NETPROBE_CONFIG"; do
+  [[ -f "$LIVE" ]] || continue
+
+  REF=""
+  [[ -f "${LIVE}.dpkg-dist" ]] && REF="${LIVE}.dpkg-dist"
+  [[ -z "$REF" ]] && [[ -f "${LIVE}.new" ]] && REF="${LIVE}.new"
+  [[ -n "$REF" ]] || continue
+
+  COUNT=$(/usr/bin/comm -13 \
+    <(/bin/grep -oE '^[[:space:]]*[A-Z_][A-Z0-9_]*=' "$LIVE" 2>/dev/null | /bin/sed 's/[[:space:]]*//g; s/=$//' | /usr/bin/sort -u) \
+    <(/bin/grep -oE '^[[:space:]]*[A-Z_][A-Z0-9_]*=' "$REF" 2>/dev/null | /bin/sed 's/[[:space:]]*//g; s/=$//' | /usr/bin/sort -u) \
+    2>/dev/null | /usr/bin/wc -l | /usr/bin/tr -d ' ') || COUNT=0
+
+  if [[ "${COUNT:-0}" =~ ^[0-9]+$ ]] && (( COUNT > 0 )); then
+    DRIFT+="$(/usr/bin/basename "$LIVE"):$COUNT "
+  fi
+done
+
+if [[ -n "$DRIFT" ]]; then
+  echo
+  echo -e "  ${YELLOW}config:      new settings available${NC} (${DRIFT% })"
+  echo "               these are missing from your config, so the features"
+  echo "               behind them are off. review and add with:"
+  echo "                 netwatch-config-merge.sh"
+  echo "                 sudo netwatch-config-merge.sh --apply"
+fi
+
 # --- Journal persistence, required for post-mortem work ---
 echo
 if [[ -d /var/log/journal ]]; then

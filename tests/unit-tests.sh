@@ -923,6 +923,54 @@ CFGEOF
   fi
 }
 
+# dpkg never merges config files, so keeping your version on upgrade leaves new
+# settings absent - the features behind them silently stay off. The merge tool
+# must add only what is missing and never touch a value already set.
+test_config_merge_preserves_values() {
+  test_start "Config merge: adds missing keys without altering existing values"
+
+  local merge="$SCRIPT_DIR/../scripts/netwatch-config-merge.sh"
+  if [[ ! -f "$merge" ]]; then
+    test_fail "Merge script not found: $merge"
+    return
+  fi
+
+  setup_mock_env
+  local d="$MOCK_DIR/etc/default"
+  mkdir -p "$d"
+
+  # A customised config missing a new key, and the shipped reference
+  printf 'DIGEST_ENABLED=1
+DIGEST_WINDOW_HOURS=6
+' > "$d/netwatch-netprobe"
+  printf 'DIGEST_ENABLED=1
+DIGEST_WINDOW_HOURS=24
+DIGEST_FORMAT="text"
+'     > "$d/netwatch-netprobe.dpkg-dist"
+
+  local patched="$MOCK_DIR/merge.sh"
+  # shellcheck disable=SC2016  # literal source text, not an expansion
+  sed -e "s|/etc/default/netwatch|$d/netwatch|g"       -e 's|if \[\[ \$EUID -ne 0 \]\]; then|if false; then|' "$merge" > "$patched"
+
+  bash "$patched" --apply >/dev/null 2>&1 || true
+
+  local result="ok"
+  # The new key must be added
+  grep -q '^DIGEST_FORMAT=' "$d/netwatch-netprobe" || result="missing-new-key"
+  # The customised value must survive
+  grep -q '^DIGEST_WINDOW_HOURS=6' "$d/netwatch-netprobe" || result="lost-custom-value"
+  # The shipped default must NOT overwrite it
+  grep -q '^DIGEST_WINDOW_HOURS=24' "$d/netwatch-netprobe" && result="clobbered-with-default"
+
+  cleanup_mock_env
+
+  if [[ "$result" == "ok" ]]; then
+    test_pass
+  else
+    test_fail "Merge behaved incorrectly: $result"
+  fi
+}
+
 # The offload labels must be the short names ethtool -K accepts, so the summary
 # can be acted on directly. Truncating the feature names instead rendered both
 # generic-* features as "gen", making the output ambiguous.
@@ -1963,6 +2011,7 @@ test_digest_embed_format
 test_digest_embed_escapes_window_hours
 test_summary_reports_armed_state
 test_summary_does_not_source_config
+test_config_merge_preserves_values
 test_summary_offload_labels_unambiguous
 test_detect_iface_never_reports_bridge
 test_deb_declares_conffiles
