@@ -805,6 +805,75 @@ CURLEOF
   fi
 }
 
+# DIGEST_WINDOW_HOURS is operator-editable config interpolated into the embed
+# field names. Unescaped, a quote in it produces a malformed field name
+# ("Hangs (24"xh)") that invalidates the entire payload.
+test_digest_embed_escapes_window_hours() {
+  test_start "Digest: embed escapes DIGEST_WINDOW_HOURS"
+
+  local digest="$SCRIPT_DIR/../src/netwatch-digest.sh"
+  if [[ ! -f "$digest" ]]; then
+    test_fail "Digest script not found: $digest"
+    return
+  fi
+
+  # Guard the source: the raw value must not be interpolated into a field name
+  if grep -qE '\\"name\\":\\"(Hangs|WAN) \(\$\{DIGEST_WINDOW_HOURS\}' "$digest"; then
+    test_fail "DIGEST_WINDOW_HOURS is interpolated raw into an embed field name"
+    return
+  fi
+
+  setup_mock_env
+  local persist="$MOCK_DIR/persist"
+  mkdir -p "$persist" "$MOCK_DIR/bin"
+
+  cat > "$MOCK_DIR/bin/curl" <<'CURLEOF'
+#!/usr/bin/env bash
+while [ $# -gt 0 ]; do
+  if [ "$1" = "-d" ]; then printf '%s' "$2" > "$CAPTURE_FILE"; fi
+  shift
+done
+exit 0
+CURLEOF
+  chmod +x "$MOCK_DIR/bin/curl"
+
+  local capture="$MOCK_DIR/embed.json"
+  local patched="$MOCK_DIR/digest.sh"
+  sed "s|/usr/bin/curl|$MOCK_DIR/bin/curl|g" "$digest" > "$patched"
+
+  export CAPTURE_FILE="$capture"
+  export PERSIST_DIR="$persist"
+  export NETPROBE_IFACE="lo"
+  export DIGEST_FORMAT="embed"
+  export DIGEST_WINDOW_HOURS='24"x'
+  export WEBHOOK_ENABLED=1
+  export WEBHOOK_URL="https://example.invalid/hook"
+  bash "$patched" >/dev/null 2>&1 || true
+  unset CAPTURE_FILE PERSIST_DIR NETPROBE_IFACE DIGEST_FORMAT DIGEST_WINDOW_HOURS
+  unset WEBHOOK_ENABLED WEBHOOK_URL
+
+  local result="fail"
+  if [[ -f "$capture" ]]; then
+    if python3 -c "import json; json.load(open('$capture'))" 2>/dev/null       || python -c "import json; json.load(open('$capture'))" 2>/dev/null; then
+      result="ok"
+    else
+      # No parser: the quote must appear escaped inside the field name
+      local bs esc_quote
+      bs=$(printf '\')
+      esc_quote="${bs}\""
+      grep -qF "Hangs (24${esc_quote}xh)" "$capture" && result="ok"
+    fi
+  fi
+
+  cleanup_mock_env
+
+  if [[ "$result" == "ok" ]]; then
+    test_pass
+  else
+    test_fail "A quote in DIGEST_WINDOW_HOURS produced an invalid embed payload"
+  fi
+}
+
 #
 # Packaging Tests
 #
@@ -1728,6 +1797,7 @@ test_boot_grace_calculation
 # Regression tests (errexit safety)
 test_dryrun_does_not_arm_cooldown
 test_digest_embed_format
+test_digest_embed_escapes_window_hours
 test_deb_declares_conffiles
 test_deb_config_permissions
 test_deb_ships_digest_settings

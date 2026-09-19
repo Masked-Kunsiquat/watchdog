@@ -463,11 +463,16 @@ if [[ "$WEBHOOK_ENABLED" == "1" ]] && [[ -n "$TARGET_URL" ]] && [[ -x /usr/bin/c
     F_WAN=$(json_escape "outages=$DAY_OUTAGES  downtime=$DAY_DOWNTIME"$'\n'"dry-run trips=$DRYRUN_TRIPS")
     F_HOST=$(json_escape "iface=$IFACE_LABEL  uptime=$UPTIME_H"$'\n'"link changes=$LINK_CHANGES")
 
+    # DIGEST_WINDOW_HOURS comes from operator-editable config, so it needs the
+    # same escaping as every other dynamic value - a stray quote in it would
+    # otherwise produce a malformed field name and break the whole payload.
+    WINDOW_LABEL=$(json_escape "${DIGEST_WINDOW_HOURS}h")
+
     PAYLOAD="{\"embeds\":[{\"title\":\"$EMBED_TITLE\",\"description\":\"$EMBED_DESC\",\"color\":$EMBED_COLOR,\"timestamp\":\"$EMBED_TS\",\"fields\":["
     PAYLOAD+="{\"name\":\"NIC\",\"value\":\"$F_NIC\",\"inline\":true},"
-    PAYLOAD+="{\"name\":\"Hangs (${DIGEST_WINDOW_HOURS}h)\",\"value\":\"$F_HANGS\",\"inline\":true},"
+    PAYLOAD+="{\"name\":\"Hangs ($WINDOW_LABEL)\",\"value\":\"$F_HANGS\",\"inline\":true},"
     PAYLOAD+="{\"name\":\"Counters\",\"value\":\"$F_COUNTERS\",\"inline\":true},"
-    PAYLOAD+="{\"name\":\"WAN (${DIGEST_WINDOW_HOURS}h)\",\"value\":\"$F_WAN\",\"inline\":true},"
+    PAYLOAD+="{\"name\":\"WAN ($WINDOW_LABEL)\",\"value\":\"$F_WAN\",\"inline\":true},"
     PAYLOAD+="{\"name\":\"Host\",\"value\":\"$F_HOST\",\"inline\":true}"
     PAYLOAD+="]}]}"
   else
