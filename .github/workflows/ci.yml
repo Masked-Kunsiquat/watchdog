@@ -417,6 +417,101 @@ jobs:
           $SUDO iptables -D OUTPUT -p icmp -d 1.1.1.1 -j DROP || true
           $SUDO iptables -D OUTPUT -p icmp -d 9.9.9.9 -j DROP || true
 
+  deb-package:
+    name: Debian Package Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - *setup_sudo
+
+      - name: Build the package
+        run: |
+          chmod +x scripts/build-deb.sh
+          VERSION=9.9.9 ./scripts/build-deb.sh
+          test -f dist/netwatch-agent_9.9.9_all.deb
+
+      - name: Inspect package metadata
+        run: |
+          echo "--- control ---"
+          dpkg-deb -f dist/netwatch-agent_9.9.9_all.deb
+
+          echo "--- conffiles ---"
+          # Config files MUST be declared, or dpkg silently overwrites local
+          # edits on every upgrade (this shipped in v1.2.0 and wiped a real
+          # host's webhook URL and DRY_RUN setting).
+          CONFF=$(dpkg-deb --ctrl-tarfile dist/netwatch-agent_9.9.9_all.deb             | tar -xO ./conffiles 2>/dev/null || true)
+          echo "$CONFF"
+          echo "$CONFF" | grep -q '/etc/default/netwatch-agent'             || { echo "ERROR: netwatch-agent not declared as a conffile"; exit 1; }
+          echo "$CONFF" | grep -q '/etc/default/netwatch-netprobe'             || { echo "ERROR: netwatch-netprobe not declared as a conffile"; exit 1; }
+
+      - name: Maintainer scripts are valid POSIX sh
+        run: |
+          mkdir -p /tmp/ctrl
+          dpkg-deb --ctrl-tarfile dist/netwatch-agent_9.9.9_all.deb | tar -x -C /tmp/ctrl
+          for f in postinst prerm postrm; do
+            test -f "/tmp/ctrl/$f" || { echo "ERROR: missing $f"; exit 1; }
+            sh -n "/tmp/ctrl/$f" || { echo "ERROR: $f is not valid sh"; exit 1; }
+            echo "OK: $f"
+          done
+
+      - name: Install the package
+        run: |
+          $SUDO dpkg -i dist/netwatch-agent_9.9.9_all.deb
+          $SUDO test -f /usr/local/sbin/netwatch-agent.sh
+          $SUDO test -f /usr/local/sbin/netwatch-netprobe.sh
+          $SUDO test -f /usr/local/sbin/netwatch-digest.sh
+          $SUDO test -f /etc/default/netwatch-agent
+
+          # The digest reads its settings from the sampler config; the package
+          # must ship them (v1.2.0 did not, so DIGEST_* was absent entirely).
+          $SUDO grep -q 'DIGEST_ENABLED' /etc/default/netwatch-netprobe             || { echo "ERROR: digest settings missing from the sampler config"; exit 1; }
+
+          # The agent config can hold a webhook token.
+          PERMS=$($SUDO stat -c '%a' /etc/default/netwatch-agent)
+          [ "$PERMS" = "640" ]             || { echo "ERROR: netwatch-agent config is $PERMS, expected 640"; exit 1; }
+
+      - name: Upgrade preserves local config
+        run: |
+          # This is the regression test for the v1.2.0 data loss.
+          echo '# LOCAL EDIT MARKER' | $SUDO tee -a /etc/default/netwatch-agent > /dev/null
+          $SUDO sed -i 's/^DRY_RUN=.*/DRY_RUN=1/' /etc/default/netwatch-agent
+
+          VERSION=9.9.10 ./scripts/build-deb.sh
+          $SUDO dpkg -i dist/netwatch-agent_9.9.10_all.deb
+
+          $SUDO grep -q 'LOCAL EDIT MARKER' /etc/default/netwatch-agent             || { echo "ERROR: upgrade clobbered the local config"; exit 1; }
+          $SUDO grep -q '^DRY_RUN=1' /etc/default/netwatch-agent             || { echo "ERROR: upgrade reverted DRY_RUN"; exit 1; }
+          echo "Local edits survived the upgrade"
+
+      - name: Upgrade respects a disabled unit
+        run: |
+          # An operator who disables a component should not find it re-enabled
+          # by the next upgrade.
+          $SUDO systemctl disable netwatch-netprobe.timer || true
+
+          VERSION=9.9.11 ./scripts/build-deb.sh
+          $SUDO dpkg -i dist/netwatch-agent_9.9.11_all.deb
+
+          if $SUDO systemctl is-enabled --quiet netwatch-netprobe.timer 2>/dev/null; then
+            echo "ERROR: upgrade re-enabled a deliberately disabled timer"
+            exit 1
+          fi
+          echo "Disabled timer stayed disabled"
+
+      - name: Purge removes units and state
+        run: |
+          $SUDO dpkg --purge netwatch-agent
+
+          $SUDO test ! -f /usr/local/sbin/netwatch-agent.sh             || { echo "ERROR: agent script survived purge"; exit 1; }
+
+          # Units must not linger as enabled with dangling symlinks.
+          if $SUDO systemctl is-enabled netwatch-agent.service 2>/dev/null | grep -q enabled; then
+            echo "ERROR: unit still enabled after purge"
+            exit 1
+          fi
+          echo "Purge left a clean system"
+
   install-uninstall:
     name: Install/Uninstall Tests
     runs-on: ubuntu-latest
