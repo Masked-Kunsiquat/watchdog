@@ -38,6 +38,7 @@ DEB_PATH="$DIST_DIR/netwatch-agent_${VERSION}_all.deb"
 /usr/bin/install -m 0755 "$ROOT_DIR/scripts/netwatch-nic-remediation.sh" "$STAGE_DIR/usr/local/sbin/netwatch-nic-remediation.sh"
 /usr/bin/install -m 0755 "$ROOT_DIR/scripts/netwatch-postmortem.sh" "$STAGE_DIR/usr/local/sbin/netwatch-postmortem.sh"
 /usr/bin/install -m 0755 "$ROOT_DIR/scripts/netwatch-setup-journald.sh" "$STAGE_DIR/usr/local/sbin/netwatch-setup-journald.sh"
+/usr/bin/install -m 0755 "$ROOT_DIR/scripts/netwatch-status-summary.sh" "$STAGE_DIR/usr/local/sbin/netwatch-status-summary.sh"
 /usr/bin/install -m 0755 "$ROOT_DIR/src/netwatch-digest.sh" "$STAGE_DIR/usr/local/sbin/netwatch-digest.sh"
 /usr/bin/install -m 0644 "$ROOT_DIR/config/netwatch-digest.service" "$STAGE_DIR/etc/systemd/system/netwatch-digest.service"
 /usr/bin/install -m 0644 "$ROOT_DIR/config/netwatch-digest.timer" "$STAGE_DIR/etc/systemd/system/netwatch-digest.timer"
@@ -120,6 +121,12 @@ case "$1" in
           fi
         done
       fi
+    fi
+
+    # Report the resulting state. dpkg is otherwise nearly silent, so an
+    # upgrade that changed what the watchdog will do would give no sign of it.
+    if [ -x /usr/local/sbin/netwatch-status-summary.sh ]; then
+      /usr/local/sbin/netwatch-status-summary.sh || true
     fi
     ;;
 esac

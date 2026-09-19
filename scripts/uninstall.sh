@@ -37,6 +37,7 @@ NETPROBE_LOG_DIR="/var/log/netwatch"
 DIGEST_SCRIPT="/usr/local/sbin/netwatch-digest.sh"
 DIGEST_UNIT="/etc/systemd/system/netwatch-digest.service"
 DIGEST_TIMER="/etc/systemd/system/netwatch-digest.timer"
+SUMMARY_SCRIPT="/usr/local/sbin/netwatch-status-summary.sh"
 
 # Parse options
 KEEP_CONFIG=false
@@ -225,7 +226,7 @@ fi
 
 for f in "$NETPROBE_SCRIPT" "$NETPROBE_UNIT" "$NETPROBE_TIMER" \
          "$NETPROBE_LOGROTATE" "$NETPROBE_CONFIG_NEW" \
-         "$DIGEST_SCRIPT" "$DIGEST_UNIT" "$DIGEST_TIMER"; do
+         "$DIGEST_SCRIPT" "$DIGEST_UNIT" "$DIGEST_TIMER"          "$SUMMARY_SCRIPT"; do
   if [[ -f "$f" ]]; then
     log_info "Removing: $f"
     $SUDO rm -f "$f"

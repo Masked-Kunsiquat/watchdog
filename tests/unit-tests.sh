@@ -876,6 +876,94 @@ CURLEOF
   fi
 }
 
+# After an install or upgrade, the operator needs to know what is actually
+# armed - not just which files were copied. A package upgrade that silently
+# reset DRY_RUN to 0 would otherwise look identical to a clean install.
+test_summary_reports_armed_state() {
+  test_start "Summary: reports DRY_RUN state prominently"
+
+  local summary="$SCRIPT_DIR/../scripts/netwatch-status-summary.sh"
+  if [[ ! -f "$summary" ]]; then
+    test_fail "Summary script not found: $summary"
+    return
+  fi
+
+  setup_mock_env
+  local cfg="$MOCK_DIR/agent.conf"
+
+  # Dry-run must read as safe
+  cat > "$cfg" <<'CFGEOF'
+HEALTH_CHECK_MODE="icmp"
+TARGETS="1.1.1.1 8.8.8.8"
+MIN_OK=1
+DOWN_WINDOW_SECONDS=600
+DRY_RUN=1
+WEBHOOK_ENABLED=1
+CFGEOF
+
+  local dry armed
+  dry=$(CONFIG_FILE="$cfg" NETPROBE_CONFIG="$MOCK_DIR/none" bash "$summary" 2>&1 || true)
+
+  # DRY_RUN=0 must be called out as ARMED
+  sed -i 's/DRY_RUN=1/DRY_RUN=0/' "$cfg"
+  armed=$(CONFIG_FILE="$cfg" NETPROBE_CONFIG="$MOCK_DIR/none" bash "$summary" 2>&1 || true)
+
+  cleanup_mock_env
+
+  if ! echo "$dry" | grep -qi 'dry-run'; then
+    test_fail "DRY_RUN=1 was not reported as dry-run"
+  elif echo "$dry" | grep -q 'ARMED'; then
+    test_fail "DRY_RUN=1 was wrongly reported as ARMED"
+  elif ! echo "$armed" | grep -q 'ARMED'; then
+    test_fail "DRY_RUN=0 was not reported as ARMED"
+  elif ! echo "$armed" | grep -q '600s'; then
+    test_fail "The reboot window was not shown when armed"
+  else
+    test_pass
+  fi
+}
+
+# The summary reads config by grepping, never by sourcing - a malformed or
+# hostile config file must not be able to execute anything.
+test_summary_does_not_source_config() {
+  test_start "Summary: reads config without sourcing it"
+
+  local summary="$SCRIPT_DIR/../scripts/netwatch-status-summary.sh"
+  if [[ ! -f "$summary" ]]; then
+    test_fail "Summary script not found: $summary"
+    return
+  fi
+
+  # No `. "$CONFIG_FILE"` or `source` of the config
+  # shellcheck disable=SC2016  # literal source text, not an expansion
+  if grep -qE '^\s*(\.|source)\s+"?\$(CONFIG_FILE|NETPROBE_CONFIG)' "$summary"; then
+    test_fail "Summary sources the config file instead of parsing it"
+    return
+  fi
+
+  setup_mock_env
+  local cfg="$MOCK_DIR/evil.conf"
+  local canary="$MOCK_DIR/canary"
+
+  # If this were sourced, the command substitution would run
+  cat > "$cfg" <<CFGEOF
+DRY_RUN=1
+EVIL=\$(touch "$canary")
+CFGEOF
+
+  CONFIG_FILE="$cfg" NETPROBE_CONFIG="$MOCK_DIR/none" bash "$summary" >/dev/null 2>&1 || true
+
+  local leaked=0
+  [[ -f "$canary" ]] && leaked=1
+  cleanup_mock_env
+
+  if (( leaked )); then
+    test_fail "Config contents were executed - the summary must not source config"
+  else
+    test_pass
+  fi
+}
+
 #
 # Packaging Tests
 #
@@ -1800,6 +1888,8 @@ test_boot_grace_calculation
 test_dryrun_does_not_arm_cooldown
 test_digest_embed_format
 test_digest_embed_escapes_window_hours
+test_summary_reports_armed_state
+test_summary_does_not_source_config
 test_deb_declares_conffiles
 test_deb_config_permissions
 test_deb_ships_digest_settings
