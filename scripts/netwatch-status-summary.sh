@@ -135,7 +135,17 @@ if [[ -f /usr/local/sbin/netwatch-netprobe.sh ]]; then
   if [[ -n "$IFACE" ]] && [[ -x /usr/sbin/ethtool ]]; then
     OFFLOADS=$(/usr/sbin/ethtool -k "$IFACE" 2>/dev/null \
       | /bin/grep -E '^(tcp-segmentation-offload|generic-segmentation-offload|generic-receive-offload):' \
-      | /usr/bin/awk '{printf "%s=%s ", substr($1,1,3), $2}') || true
+      | /usr/bin/awk '{
+          name = $1; sub(/:$/, "", name)
+          # Map to the short names ethtool -K accepts, so the output can be
+          # acted on directly. Truncating instead would render both
+          # generic-* features as "gen".
+          if (name == "tcp-segmentation-offload")          key = "tso"
+          else if (name == "generic-segmentation-offload") key = "gso"
+          else if (name == "generic-receive-offload")      key = "gro"
+          else                                             key = name
+          printf "%s=%s ", key, $2
+        }') || true
 
     if [[ -n "${OFFLOADS:-}" ]]; then
       if echo "$OFFLOADS" | /bin/grep -q '=on'; then

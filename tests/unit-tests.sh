@@ -923,6 +923,39 @@ CFGEOF
   fi
 }
 
+# The offload labels must be the short names ethtool -K accepts, so the summary
+# can be acted on directly. Truncating the feature names instead rendered both
+# generic-* features as "gen", making the output ambiguous.
+test_summary_offload_labels_unambiguous() {
+  test_start "Summary: offload labels are tso/gso/gro, not truncated"
+
+  local summary="$SCRIPT_DIR/../scripts/netwatch-status-summary.sh"
+  if [[ ! -f "$summary" ]]; then
+    test_fail "Summary script not found: $summary"
+    return
+  fi
+
+  # Guard the source: substr truncation cannot distinguish the generic-* pair
+  # shellcheck disable=SC2016  # literal source text, not an expansion
+  if grep -q 'substr($1,1,3)' "$summary"; then
+    test_fail "Offload labels are truncated; both generic-* features render as gen"
+    return
+  fi
+
+  # Each short name must be mapped explicitly
+  local missing=""
+  local k
+  for k in tso gso gro; do
+    grep -q "\"$k\"" "$summary" || missing+="$k "
+  done
+
+  if [[ -n "$missing" ]]; then
+    test_fail "No explicit mapping for: $missing"
+  else
+    test_pass
+  fi
+}
+
 # Every detect_iface implementation must refuse to report the bridge. Its whole
 # purpose is finding the hardware the WAN path depends on - and a bridge shows
 # nominal state while the NIC beneath it is wedged, so naming vmbr0 would make
@@ -1930,6 +1963,7 @@ test_digest_embed_format
 test_digest_embed_escapes_window_hours
 test_summary_reports_armed_state
 test_summary_does_not_source_config
+test_summary_offload_labels_unambiguous
 test_detect_iface_never_reports_bridge
 test_deb_declares_conffiles
 test_deb_config_permissions
