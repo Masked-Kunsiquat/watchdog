@@ -11,6 +11,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Release workflow: on `v*` tags, build and upload artifacts to the GitHub Release.
 - Debian packaging script (`scripts/build-deb.sh`) to build `netwatch-agent_<version>_all.deb` via dpkg-deb (no network), including systemd enablement hooks.
 
+## [v1.2.0] - 2026-09-18
+
+**Daily diagnostic digest**, plus a fix for a regression introduced in v1.1.0.
+
+### Fixed
+
+- **Dry-run armed the reboot cooldown.** `LAST_REBOOT` was assigned before the
+  `DRY_RUN` branch, so a dry-run trip started a `COOLDOWN_SECONDS` window even
+  though nothing rebooted. Harmless until v1.1.0 made `LAST_REBOOT` persist
+  across restarts - after that, a single trip suppressed threshold reporting
+  even through a service restart, hiding exactly the signal dry-run exists to
+  surface. Cooldown now applies only when a reboot can actually happen:
+  dry-run neither arms nor honours it (the latter also clears cooldowns armed
+  by v1.1.0). Real reboots remain cooldown-gated.
+- Digest: the first-ever run reported the full counter value as an overnight
+  delta (`tx_restart=912(Δ912)`) because an explicit empty baseline was
+  defaulted to `0`. It now reports `Δn/a` until a baseline exists.
+- Digest: only newline was JSON-escaped, so a tab or carriage return in a
+  custom template produced a payload strict parsers reject, silently breaking
+  delivery. All control characters are now escaped per RFC 8259.
+
+### Added
+
+- **`netwatch-digest.sh` and a daily timer.** One summary per day with a
+  leading `HOLDING` / `ATTENTION` / `DEGRADED` verdict, covering NIC hang
+  counts, offload state, driver-counter deltas since the previous digest, and
+  WAN outage totals. Default 21:00, changed with
+  `systemctl edit netwatch-digest.timer`.
+- Runs independently of the agent and reports in either mode;
+  `{DRYRUN_TRIPS}` counts `would reboot now` messages, which are the false
+  positives worth watching while `DRY_RUN=1`.
+- Host identifiers redacted by default - IPs and MACs are never included, and
+  the hostname requires `DIGEST_INCLUDE_HOSTNAME=1`.
+- `DIGEST_BODY_TEMPLATE` controls verbosity using the same `{PLACEHOLDER}`
+  substitution the agent's webhooks already use, so the runtime stays
+  Bash + systemd. Templates can target Notifiarr, ntfy, Gotify, or Apprise as
+  a relay.
+
+### Changed
+
+- Installer, uninstaller, and `.deb` stage the digest script, unit, and timer;
+  digest settings are appended to `/etc/default/netwatch-netprobe` on first
+  install only.
+- CI: test configs are seeded before `install.sh` starts the service (the
+  default 180s boot grace made jobs flaky on fresh runners), and the ICMP
+  reachability assertion is gated on `MIN_OK` since GitHub runners often block
+  outbound ICMP.
+
 ## [v1.1.0] - 2026-09-18
 
 **Local NIC health monitoring and e1000e hang remediation**, plus two agent
