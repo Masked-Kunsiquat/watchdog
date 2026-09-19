@@ -29,6 +29,11 @@ NC='\033[0m'
 CONFIG_FILE="${CONFIG_FILE:-/etc/default/netwatch-agent}"
 NETPROBE_CONFIG="${NETPROBE_CONFIG:-/etc/default/netwatch-netprobe}"
 
+# Where the companion tools live. Derived from this script's own location
+# rather than hardcoded, so the suggested commands stay correct if the install
+# prefix ever changes, and when running from a checkout.
+SBIN_DIR="$(cd "$(/usr/bin/dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)" || SBIN_DIR="/usr/local/sbin"
+
 # Read a KEY=VALUE from a config file without sourcing it, so a malformed file
 # cannot execute anything or abort this script.
 cfg() {
@@ -191,12 +196,21 @@ for LIVE in "$CONFIG_FILE" "$NETPROBE_CONFIG"; do
 done
 
 if [[ -n "$DRIFT" ]]; then
+  # Print an absolute path when we can resolve one. A bare command name only
+  # works if the install directory happens to be on PATH, which is true for
+  # root's login shell on Debian but not guaranteed otherwise - and these lines
+  # are meant to be copy-pasted.
+  MERGE_CMD="netwatch-config-merge.sh"
+  if [[ -x "$SBIN_DIR/netwatch-config-merge.sh" ]]; then
+    MERGE_CMD="$SBIN_DIR/netwatch-config-merge.sh"
+  fi
+
   echo
   echo -e "  ${YELLOW}config:      new settings available${NC} (${DRIFT% })"
   echo "               these are missing from your config, so the features"
   echo "               behind them are off. review and add with:"
-  echo "                 netwatch-config-merge.sh"
-  echo "                 sudo netwatch-config-merge.sh --apply"
+  echo "                 $MERGE_CMD"
+  echo "                 sudo $MERGE_CMD --apply"
 fi
 
 # --- Journal persistence, required for post-mortem work ---
@@ -204,8 +218,12 @@ echo
 if [[ -d /var/log/journal ]]; then
   echo -e "  journal:     ${GREEN}persistent${NC} (previous boots readable)"
 else
+  JOURNALD_CMD="netwatch-setup-journald.sh"
+  if [[ -x "$SBIN_DIR/netwatch-setup-journald.sh" ]]; then
+    JOURNALD_CMD="$SBIN_DIR/netwatch-setup-journald.sh"
+  fi
   echo -e "  journal:     ${YELLOW}volatile${NC} - 'journalctl -b -1' will be empty"
-  echo "               fix: netwatch-setup-journald.sh --apply"
+  echo "               fix: sudo $JOURNALD_CMD --apply"
 fi
 
 echo

@@ -923,6 +923,60 @@ CFGEOF
   fi
 }
 
+# Commands the summary suggests are meant to be copy-pasted. A bare name only
+# resolves if the install directory is on PATH - true for root's login shell on
+# Debian, not guaranteed otherwise - so an absolute path is printed whenever the
+# companion tool can be located.
+test_summary_suggests_absolute_paths() {
+  test_start "Summary: suggested commands resolve to absolute paths"
+
+  local summary="$SCRIPT_DIR/../scripts/netwatch-status-summary.sh"
+  local merge="$SCRIPT_DIR/../scripts/netwatch-config-merge.sh"
+
+  if [[ ! -f "$summary" ]] || [[ ! -f "$merge" ]]; then
+    test_fail "Summary or merge script not found"
+    return
+  fi
+
+  setup_mock_env
+  local sbin="$MOCK_DIR/sbin"
+  mkdir -p "$sbin"
+  cp "$summary" "$merge" "$sbin/"
+  chmod +x "$sbin"/*.sh
+
+  printf 'DRY_RUN=1
+TARGETS="1.1.1.1"
+MIN_OK=1
+' > "$MOCK_DIR/agent"
+  printf 'DIGEST_ENABLED=1
+' > "$MOCK_DIR/netprobe"
+  printf 'DIGEST_ENABLED=1
+DIGEST_FORMAT="embed"
+' > "$MOCK_DIR/netprobe.dpkg-dist"
+
+  local out
+  out=$(CONFIG_FILE="$MOCK_DIR/agent" NETPROBE_CONFIG="$MOCK_DIR/netprobe"     bash "$sbin/netwatch-status-summary.sh" 2>&1) || true
+
+  # Both suggested lines must carry the absolute path, not just one - a loose
+  # check would pass while half the output still showed a bare name.
+  local absolute bare
+  absolute=$(echo "$out" | grep -cF "$sbin/netwatch-config-merge.sh") || absolute=0
+  bare=$(echo "$out" | grep -cE '^ +(sudo )?netwatch-config-merge\.sh') || bare=0
+
+  local result="fail"
+  if (( absolute >= 2 )) && (( bare == 0 )); then
+    result="ok"
+  fi
+
+  cleanup_mock_env
+
+  if [[ "$result" == "ok" ]]; then
+    test_pass
+  else
+    test_fail "Summary suggested a bare command name instead of an absolute path"
+  fi
+}
+
 # Every script the package installs must also be removed by uninstall.sh.
 # Three diagnostic tools shipped since v1.1.0 were never added to the removal
 # list and sat orphaned in /usr/local/sbin after an uninstall.
@@ -2038,6 +2092,7 @@ test_digest_embed_format
 test_digest_embed_escapes_window_hours
 test_summary_reports_armed_state
 test_summary_does_not_source_config
+test_summary_suggests_absolute_paths
 test_uninstall_removes_every_packaged_script
 test_config_merge_preserves_values
 test_summary_offload_labels_unambiguous
