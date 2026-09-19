@@ -923,6 +923,33 @@ CFGEOF
   fi
 }
 
+# Every script the package installs must also be removed by uninstall.sh.
+# Three diagnostic tools shipped since v1.1.0 were never added to the removal
+# list and sat orphaned in /usr/local/sbin after an uninstall.
+test_uninstall_removes_every_packaged_script() {
+  test_start "Uninstall: removes every script the package installs"
+
+  local builder="$SCRIPT_DIR/../scripts/build-deb.sh"
+  local uninstaller="$SCRIPT_DIR/../scripts/uninstall.sh"
+
+  if [[ ! -f "$builder" ]] || [[ ! -f "$uninstaller" ]]; then
+    test_fail "build-deb.sh or uninstall.sh not found"
+    return
+  fi
+
+  local orphans="" script
+  while IFS= read -r script; do
+    [[ -n "$script" ]] || continue
+    grep -qF "$script" "$uninstaller" || orphans+="$script "
+  done < <(grep -oE 'usr/local/sbin/[a-z-]+\.sh' "$builder" | sed 's|.*/||' | sort -u)
+
+  if [[ -z "$orphans" ]]; then
+    test_pass
+  else
+    test_fail "Installed but never removed on uninstall: $orphans"
+  fi
+}
+
 # dpkg never merges config files, so keeping your version on upgrade leaves new
 # settings absent - the features behind them silently stay off. The merge tool
 # must add only what is missing and never touch a value already set.
@@ -2011,6 +2038,7 @@ test_digest_embed_format
 test_digest_embed_escapes_window_hours
 test_summary_reports_armed_state
 test_summary_does_not_source_config
+test_uninstall_removes_every_packaged_script
 test_config_merge_preserves_values
 test_summary_offload_labels_unambiguous
 test_detect_iface_never_reports_bridge

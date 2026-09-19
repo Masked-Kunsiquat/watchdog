@@ -40,6 +40,12 @@ DIGEST_TIMER="/etc/systemd/system/netwatch-digest.timer"
 SUMMARY_SCRIPT="/usr/local/sbin/netwatch-status-summary.sh"
 MERGE_SCRIPT="/usr/local/sbin/netwatch-config-merge.sh"
 
+# Diagnostic tooling. Shipped since v1.1.0 but never removed on uninstall -
+# these were orphaned in /usr/local/sbin after the package was gone.
+REMEDIATION_SCRIPT="/usr/local/sbin/netwatch-nic-remediation.sh"
+POSTMORTEM_SCRIPT="/usr/local/sbin/netwatch-postmortem.sh"
+JOURNALD_SCRIPT="/usr/local/sbin/netwatch-setup-journald.sh"
+
 # Parse options
 KEEP_CONFIG=false
 PURGE_DATA=false
@@ -227,7 +233,9 @@ fi
 
 for f in "$NETPROBE_SCRIPT" "$NETPROBE_UNIT" "$NETPROBE_TIMER" \
          "$NETPROBE_LOGROTATE" "$NETPROBE_CONFIG_NEW" \
-         "$DIGEST_SCRIPT" "$DIGEST_UNIT" "$DIGEST_TIMER"          "$SUMMARY_SCRIPT" "$MERGE_SCRIPT"; do
+         "$DIGEST_SCRIPT" "$DIGEST_UNIT" "$DIGEST_TIMER" \
+         "$SUMMARY_SCRIPT" "$MERGE_SCRIPT" \
+         "$REMEDIATION_SCRIPT" "$POSTMORTEM_SCRIPT" "$JOURNALD_SCRIPT"; do
   if [[ -f "$f" ]]; then
     log_info "Removing: $f"
     $SUDO rm -f "$f"
