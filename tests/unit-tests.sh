@@ -923,6 +923,46 @@ CFGEOF
   fi
 }
 
+# Every detect_iface implementation must refuse to report the bridge. Its whole
+# purpose is finding the hardware the WAN path depends on - and a bridge shows
+# nominal state while the NIC beneath it is wedged, so naming vmbr0 would make
+# the reported offload state and counters meaningless.
+test_detect_iface_never_reports_bridge() {
+  test_start "detect_iface: never falls back to the bridge name"
+
+  local missing=""
+  local f
+  for f in "$SCRIPT_DIR/../scripts/netwatch-status-summary.sh"            "$SCRIPT_DIR/../src/netwatch-netprobe.sh"            "$SCRIPT_DIR/../src/netwatch-digest.sh"; do
+    [[ -f "$f" ]] || { missing+="$(basename "$f") "; continue; }
+
+    # Isolate the bridge branch: between "if [[ -d .../bridge" and the "fi"
+    # that closes it, the path after the port loop must not echo route_dev.
+    local branch
+    # shellcheck disable=SC2016  # literal source text, not an expansion
+    branch=$(sed -n '/-d "\/sys\/class\/net\/\$route_dev\/bridge"/,/^  fi$/p' "$f")
+
+    if [[ -z "$branch" ]]; then
+      missing+="$(basename "$f"):no-bridge-branch "
+      continue
+    fi
+
+    # After the loop closes, the branch must terminate (return or empty echo)
+    # rather than falling through to the route_dev fallback.
+    local after_loop
+    after_loop=$(echo "$branch" | sed -n '/^    done$/,$p')
+
+    if ! echo "$after_loop" | grep -qE 'return 1|echo ""'; then
+      missing+="$(basename "$f"):falls-through "
+    fi
+  done
+
+  if [[ -z "$missing" ]]; then
+    test_pass
+  else
+    test_fail "Bridge fallthrough possible in: $missing"
+  fi
+}
+
 # The summary reads config by grepping, never by sourcing - a malformed or
 # hostile config file must not be able to execute anything.
 test_summary_does_not_source_config() {
@@ -1890,6 +1930,7 @@ test_digest_embed_format
 test_digest_embed_escapes_window_hours
 test_summary_reports_armed_state
 test_summary_does_not_source_config
+test_detect_iface_never_reports_bridge
 test_deb_declares_conffiles
 test_deb_config_permissions
 test_deb_ships_digest_settings

@@ -454,7 +454,7 @@ wedged. Reporting the bridge would make the sampler useless.
 
 **Steps**:
 ```bash
-systemctl start netwatch-netprobe.service
+sudo systemctl start netwatch-netprobe.service
 journalctl -t netwatch-netprobe -n 1 --no-pager
 ```
 
@@ -594,7 +594,7 @@ conffile, and upgrading silently replaced it — losing the webhook URL,
 1. Mark the config:
    ```bash
    echo "# upgrade marker" | sudo tee -a /etc/default/netwatch-agent
-   grep -c 'DRY_RUN=1' /etc/default/netwatch-agent
+   sudo grep -c 'DRY_RUN=1' /etc/default/netwatch-agent
    ```
 2. Reinstall the same or a newer `.deb`:
    ```bash
@@ -602,9 +602,9 @@ conffile, and upgrading silently replaced it — losing the webhook URL,
    ```
 3. Verify survival:
    ```bash
-   grep -c 'upgrade marker' /etc/default/netwatch-agent   # want 1
-   grep -c 'DRY_RUN=1' /etc/default/netwatch-agent        # unchanged
-   ls -l /etc/default/netwatch-agent                      # want 0640
+   sudo grep -c 'upgrade marker' /etc/default/netwatch-agent   # want 1
+   sudo grep -c 'DRY_RUN=1' /etc/default/netwatch-agent        # unchanged
+   ls -l /etc/default/netwatch-agent                           # want 0640
    ```
 
 **Expected Result**: The marker survives; dpkg may report a conffile prompt or

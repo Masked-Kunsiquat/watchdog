@@ -6,12 +6,20 @@ on:
   pull_request:
     branches: [ master ]
 
+# CI only reads the repository. Declared explicitly rather than relying on the
+# repo-level default, so a later change to that default cannot silently widen
+# what these jobs can do.
+permissions:
+  contents: read
+
 jobs:
   shellcheck:
     name: Shellcheck Linting
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - &setup_sudo
         name: Setup SUDO helper
@@ -38,6 +46,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - *setup_sudo
 
@@ -51,6 +61,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - *setup_sudo
 
@@ -64,6 +76,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - *setup_sudo
 
@@ -136,6 +150,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - *setup_sudo
 
@@ -205,6 +221,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - *setup_sudo
 
@@ -278,6 +296,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - *setup_sudo
 
@@ -422,6 +442,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - *setup_sudo
 
@@ -517,6 +539,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - *setup_sudo
 

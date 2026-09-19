@@ -80,8 +80,15 @@ detect_iface() {
         return 0
       fi
     done
+
+    # The route device is a bridge but no physical port was found. Reporting
+    # the bridge here would defeat the purpose: its offload state and counters
+    # say nothing about the hardware the WAN path actually depends on.
+    echo ""
+    return 0
   fi
 
+  # Not a bridge - the route device is the physical interface.
   echo "$route_dev"
 }
 
