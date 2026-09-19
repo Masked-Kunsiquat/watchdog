@@ -26,12 +26,12 @@ DEB_PATH="$DIST_DIR/netwatch-agent_${VERSION}_all.deb"
 
 # Install files with correct permissions
 /usr/bin/install -m 0755 "$ROOT_DIR/src/netwatch-agent.sh" "$STAGE_DIR/usr/local/sbin/netwatch-agent.sh"
-/usr/bin/install -m 0644 "$ROOT_DIR/config/netwatch-agent.conf" "$STAGE_DIR/etc/default/netwatch-agent"
+/usr/bin/install -m 0640 "$ROOT_DIR/config/netwatch-agent.conf" "$STAGE_DIR/etc/default/netwatch-agent"
 /usr/bin/install -m 0644 "$ROOT_DIR/config/netwatch-agent.service" "$STAGE_DIR/etc/systemd/system/netwatch-agent.service"
 
 # NIC health sampler and remediation tooling
 /usr/bin/install -m 0755 "$ROOT_DIR/src/netwatch-netprobe.sh" "$STAGE_DIR/usr/local/sbin/netwatch-netprobe.sh"
-/usr/bin/install -m 0644 "$ROOT_DIR/config/netwatch-netprobe.conf" "$STAGE_DIR/etc/default/netwatch-netprobe"
+/usr/bin/install -m 0640 "$ROOT_DIR/config/netwatch-netprobe.conf" "$STAGE_DIR/etc/default/netwatch-netprobe"
 /usr/bin/install -m 0644 "$ROOT_DIR/config/netwatch-netprobe.service" "$STAGE_DIR/etc/systemd/system/netwatch-netprobe.service"
 /usr/bin/install -m 0644 "$ROOT_DIR/config/netwatch-netprobe.timer" "$STAGE_DIR/etc/systemd/system/netwatch-netprobe.timer"
 /usr/bin/install -m 0644 "$ROOT_DIR/config/netwatch-netprobe.logrotate" "$STAGE_DIR/etc/logrotate.d/netwatch-netprobe"
@@ -41,8 +41,25 @@ DEB_PATH="$DIST_DIR/netwatch-agent_${VERSION}_all.deb"
 /usr/bin/install -m 0755 "$ROOT_DIR/src/netwatch-digest.sh" "$STAGE_DIR/usr/local/sbin/netwatch-digest.sh"
 /usr/bin/install -m 0644 "$ROOT_DIR/config/netwatch-digest.service" "$STAGE_DIR/etc/systemd/system/netwatch-digest.service"
 /usr/bin/install -m 0644 "$ROOT_DIR/config/netwatch-digest.timer" "$STAGE_DIR/etc/systemd/system/netwatch-digest.timer"
+
+# The digest reads its settings from the sampler config, so append them here the
+# same way install.sh does. Without this the package ships no DIGEST_* keys and
+# the digest silently falls back to built-in defaults.
+/bin/cat "$ROOT_DIR/config/netwatch-digest.conf" >> "$STAGE_DIR/etc/default/netwatch-netprobe"
 /usr/bin/install -m 0644 "$ROOT_DIR/LICENSE" "$STAGE_DIR/usr/share/doc/netwatch-agent/copyright"
 /usr/bin/install -m 0644 "$ROOT_DIR/README.md" "$ROOT_DIR/CHANGELOG.md" "$ROOT_DIR/VERSION" "$STAGE_DIR/usr/share/doc/netwatch-agent/"
+
+# Declare the config files as dpkg conffiles.
+#
+# Without this, dpkg treats them as ordinary package files and silently
+# overwrites local edits on every upgrade - losing webhook URLs, DRY_RUN, and
+# custom targets. Declared here, dpkg preserves a modified file and reports the
+# difference instead.
+/bin/cat >"$STAGE_DIR/DEBIAN/conffiles" <<'EOF'
+/etc/default/netwatch-agent
+/etc/default/netwatch-netprobe
+/etc/logrotate.d/netwatch-netprobe
+EOF
 
 # Compress changelog per Debian policy (keep simple gzip)
 /bin/gzip -fn9 "$STAGE_DIR/usr/share/doc/netwatch-agent/CHANGELOG.md"
@@ -72,6 +89,9 @@ EOF
 /bin/cat >"$STAGE_DIR/DEBIAN/postinst" <<'EOF'
 #!/bin/sh
 set -e
+# Create state directories if absent. mkdir -p leaves an existing directory
+# untouched, so metrics.dat and the digest baseline survive an upgrade - they
+# hold lifetime counters that cannot be reconstructed.
 mkdir -p /var/lib/netwatch-agent /var/log/netwatch
 chmod 0750 /var/lib/netwatch-agent
 chmod 0755 /var/log/netwatch

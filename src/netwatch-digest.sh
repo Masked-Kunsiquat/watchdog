@@ -37,6 +37,11 @@ TAG="netwatch-digest"
 : "${DIGEST_BODY_TEMPLATE:=}"
 : "${DIGEST_WEBHOOK_URL:=}"
 
+# Payload shape: "text" (a content string, works with any webhook service) or
+# "embed" (a Discord embed with a verdict-coloured border and a field grid).
+# Only Discord understands the embeds array, so text remains the default.
+: "${DIGEST_FORMAT:=text}"
+
 # Inherited from the agent config (webhook delivery)
 : "${WEBHOOK_ENABLED:=0}"
 : "${WEBHOOK_URL:=}"
@@ -127,6 +132,38 @@ read_field() {
   value=$(/bin/grep -E "^${key}=" "$file" 2>/dev/null | /usr/bin/head -1 | /usr/bin/cut -d= -f2)
   [[ "$value" =~ ^[0-9]{1,15}$ ]] || { echo "$fallback"; return 0; }
   echo "$value"
+}
+
+# Escape a string for inclusion in a JSON string literal.
+#
+# Backslashes MUST be handled first, or the escapes added afterwards would
+# themselves be escaped again. RFC 8259 also forbids raw U+0000-U+001F inside a
+# string, so every control character needs escaping - not just newline. A tab in
+# a custom template would otherwise produce a payload that strict parsers reject
+# ("Bad control character in string literal"), silently breaking delivery.
+json_escape() {
+  local text="$1"
+  local dec cc esc
+
+  text="${text//\\/\\\\}"
+  text="${text//\"/\\\"}"
+  text="${text//$'\n'/\\n}"
+  text="${text//$'\r'/\\r}"
+  text="${text//$'\t'/\\t}"
+  text="${text//$'\b'/\\b}"
+  text="${text//$'\f'/\\f}"
+
+  # Remaining control characters have no short escape; emit the \uXXXX form.
+  # Decimal codepoints, skipping those handled above (8, 9, 10, 12, 13).
+  for dec in 1 2 3 4 5 6 7 11 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31; do
+    cc=$(printf '%b' "$(printf '\\%03o' "$dec")")
+    if [[ "$text" == *"$cc"* ]]; then
+      esc=$(printf '\\u%04X' "$dec")
+      text="${text//$cc/$esc}"
+    fi
+  done
+
+  printf '%s' "$text"
 }
 
 # Format a second count as a human duration
@@ -401,36 +438,41 @@ log "Digest [$VERDICT] iface=$IFACE_LABEL hangs=$HANG_COUNT tx_timeout=$TX_TIMEO
 TARGET_URL="${DIGEST_WEBHOOK_URL:-$WEBHOOK_URL}"
 
 if [[ "$WEBHOOK_ENABLED" == "1" ]] && [[ -n "$TARGET_URL" ]] && [[ -x /usr/bin/curl ]]; then
-  # JSON-escape the body. Backslashes MUST come first, or the escapes added
-  # below would themselves be escaped again.
-  JSON_BODY="$BODY"
-  JSON_BODY="${JSON_BODY//\\/\\\\}"
-  JSON_BODY="${JSON_BODY//\"/\\\"}"
+  JSON_BODY=$(json_escape "$BODY")
 
-  # RFC 8259 forbids raw U+0000-U+001F inside a string, so every control
-  # character needs escaping - not just newline. A tab or carriage return in a
-  # custom DIGEST_BODY_TEMPLATE would otherwise produce a payload that strict
-  # parsers reject ("Bad control character in string literal"), silently
-  # breaking delivery.
-  JSON_BODY="${JSON_BODY//$'\n'/\\n}"
-  JSON_BODY="${JSON_BODY//$'\r'/\\r}"
-  JSON_BODY="${JSON_BODY//$'\t'/\\t}"
-  JSON_BODY="${JSON_BODY//$'\b'/\\b}"
-  JSON_BODY="${JSON_BODY//$'\f'/\\f}"
+  # Discord embeds give a verdict-coloured left border, a field grid, and a
+  # timestamp - none of which a plain content string can express. Other webhook
+  # services do not understand the embeds array, so this is opt-in and the text
+  # payload remains the default.
+  if [[ "$DIGEST_FORMAT" == "embed" ]]; then
+    case "$VERDICT" in
+      HOLDING)   EMBED_COLOR=3066993 ;;   # green
+      ATTENTION) EMBED_COLOR=16098851 ;;  # amber
+      DEGRADED)  EMBED_COLOR=15158332 ;;  # red
+      *)         EMBED_COLOR=9807270 ;;   # grey
+    esac
 
-  # Remaining control characters have no short escape; emit the \uXXXX form.
-  # No `local` here: this block runs at script scope, not inside a function.
-  # Decimal codepoints, skipping the ones already handled above
-  # (8=\b 9=\t 10=\n 12=\f 13=\r).
-  for _dec in 1 2 3 4 5 6 7 11 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31; do
-    _cc=$(printf '%b' "$(printf '\\%03o' "$_dec")")
-    if [[ "$JSON_BODY" == *"$_cc"* ]]; then
-      _esc=$(printf '\\u%04X' "$_dec")
-      JSON_BODY="${JSON_BODY//$_cc/$_esc}"
-    fi
-  done
+    EMBED_TITLE=$(json_escape "Netwatch digest - $VERDICT")
+    EMBED_DESC=$(json_escape "${VERDICT_NOTES% }")
+    EMBED_TS=$(/usr/bin/date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || echo "")
 
-  PAYLOAD="{\"content\":\"$JSON_BODY\"}"
+    # Field values are short so they sit side by side in Discord's grid.
+    F_NIC=$(json_escape "link=$OPERSTATE"$'\n'"$OFFLOAD_SUMMARY")
+    F_HANGS=$(json_escape "hang=$HANG_COUNT  tx-timeout=$TXTIMEOUT_COUNT"$'\n'"reset=$RESET_COUNT  me=$ME_COUNT")
+    F_COUNTERS=$(json_escape "tx_timeout=$TX_TIMEOUT (${DELTA_TX_TIMEOUT:-0})"$'\n'"tx_restart=$TX_RESTART (${DELTA_TX_RESTART:-0})")
+    F_WAN=$(json_escape "outages=$DAY_OUTAGES  downtime=$DAY_DOWNTIME"$'\n'"dry-run trips=$DRYRUN_TRIPS")
+    F_HOST=$(json_escape "iface=$IFACE_LABEL  uptime=$UPTIME_H"$'\n'"link changes=$LINK_CHANGES")
+
+    PAYLOAD="{\"embeds\":[{\"title\":\"$EMBED_TITLE\",\"description\":\"$EMBED_DESC\",\"color\":$EMBED_COLOR,\"timestamp\":\"$EMBED_TS\",\"fields\":["
+    PAYLOAD+="{\"name\":\"NIC\",\"value\":\"$F_NIC\",\"inline\":true},"
+    PAYLOAD+="{\"name\":\"Hangs (${DIGEST_WINDOW_HOURS}h)\",\"value\":\"$F_HANGS\",\"inline\":true},"
+    PAYLOAD+="{\"name\":\"Counters\",\"value\":\"$F_COUNTERS\",\"inline\":true},"
+    PAYLOAD+="{\"name\":\"WAN (${DIGEST_WINDOW_HOURS}h)\",\"value\":\"$F_WAN\",\"inline\":true},"
+    PAYLOAD+="{\"name\":\"Host\",\"value\":\"$F_HOST\",\"inline\":true}"
+    PAYLOAD+="]}]}"
+  else
+    PAYLOAD="{\"content\":\"$JSON_BODY\"}"
+  fi
 
   declare -a curl_args=(-X "$WEBHOOK_METHOD" -m "$WEBHOOK_TIMEOUT" -s -S)
   if [[ -n "$WEBHOOK_HEADERS" ]]; then

@@ -730,6 +730,162 @@ EOF
   fi
 }
 
+# DIGEST_FORMAT=embed emits a Discord embed rather than a content string. The
+# shape differs entirely, so this guards that the verdict maps to the right
+# colour and that the payload is still valid JSON.
+test_digest_embed_format() {
+  test_start "Digest: embed format produces a valid coloured payload"
+
+  local digest="$SCRIPT_DIR/../src/netwatch-digest.sh"
+  if [[ ! -f "$digest" ]]; then
+    test_fail "Digest script not found: $digest"
+    return
+  fi
+
+  # Each verdict needs a distinct colour, or the border conveys nothing
+  local missing=""
+  local v
+  for v in HOLDING ATTENTION DEGRADED; do
+    grep -qE "^ *$v\)" "$digest" || missing+="$v "
+  done
+  if [[ -n "$missing" ]]; then
+    test_fail "No embed colour mapped for: $missing"
+    return
+  fi
+
+  # Text must remain the default: other webhook services reject embeds
+  if ! grep -q 'DIGEST_FORMAT:=text' "$digest"; then
+    test_fail "DIGEST_FORMAT does not default to text"
+    return
+  fi
+
+  setup_mock_env
+  local persist="$MOCK_DIR/persist"
+  mkdir -p "$persist" "$MOCK_DIR/bin"
+
+  cat > "$MOCK_DIR/bin/curl" <<'CURLEOF'
+#!/usr/bin/env bash
+while [ $# -gt 0 ]; do
+  if [ "$1" = "-d" ]; then printf '%s' "$2" > "$CAPTURE_FILE"; fi
+  shift
+done
+exit 0
+CURLEOF
+  chmod +x "$MOCK_DIR/bin/curl"
+
+  local capture="$MOCK_DIR/embed.json"
+  local patched="$MOCK_DIR/digest.sh"
+  sed "s|/usr/bin/curl|$MOCK_DIR/bin/curl|g" "$digest" > "$patched"
+
+  export CAPTURE_FILE="$capture"
+  export PERSIST_DIR="$persist"
+  export NETPROBE_IFACE="lo"
+  export DIGEST_FORMAT="embed"
+  export WEBHOOK_ENABLED=1
+  export WEBHOOK_URL="https://example.invalid/hook"
+  bash "$patched" >/dev/null 2>&1 || true
+  unset CAPTURE_FILE PERSIST_DIR NETPROBE_IFACE DIGEST_FORMAT WEBHOOK_ENABLED WEBHOOK_URL
+
+  local result="fail"
+  if [[ -f "$capture" ]]; then
+    if grep -q '"embeds"' "$capture" && grep -q '"color"' "$capture"; then
+      # No raw control characters, same requirement as the text payload
+      if ! LC_ALL=C grep -q '[-]' "$capture"; then
+        result="ok"
+      fi
+    fi
+  fi
+
+  cleanup_mock_env
+
+  if [[ "$result" == "ok" ]]; then
+    test_pass
+  else
+    test_fail "Embed payload missing embeds/color, or contained a raw control character"
+  fi
+}
+
+#
+# Packaging Tests
+#
+
+# dpkg silently overwrites a package file on upgrade unless it is declared a
+# conffile. /etc/default/netwatch-agent holds the webhook URL, DRY_RUN, and
+# custom targets - losing those on `dpkg -i` is silent data loss, which is
+# exactly what happened on a real host during the v1.2.0 upgrade.
+test_deb_declares_conffiles() {
+  test_start "Packaging: config files are declared as dpkg conffiles"
+
+  local builder="$SCRIPT_DIR/../scripts/build-deb.sh"
+  if [[ ! -f "$builder" ]]; then
+    test_fail "build-deb.sh not found: $builder"
+    return
+  fi
+
+  if ! grep -q 'DEBIAN/conffiles' "$builder"; then
+    test_fail "No DEBIAN/conffiles is written; dpkg will clobber local config"
+    return
+  fi
+
+  local missing=""
+  local f
+  for f in /etc/default/netwatch-agent /etc/default/netwatch-netprobe; do
+    grep -qF "$f" "$builder" || missing+="$f "
+  done
+
+  if [[ -n "$missing" ]]; then
+    test_fail "Not declared as conffiles: $missing"
+    return
+  fi
+
+  test_pass
+}
+
+# The agent config can hold a webhook token, so it must not be world-readable.
+# install.sh uses 0640; the package must match.
+test_deb_config_permissions() {
+  test_start "Packaging: configs are installed 0640, not world-readable"
+
+  local builder="$SCRIPT_DIR/../scripts/build-deb.sh"
+  if [[ ! -f "$builder" ]]; then
+    test_fail "build-deb.sh not found: $builder"
+    return
+  fi
+
+  local bad=""
+  if grep -qE 'install -m 0644 .*etc/default/netwatch-agent"' "$builder"; then
+    bad+="netwatch-agent "
+  fi
+  if grep -qE 'install -m 0644 .*etc/default/netwatch-netprobe"' "$builder"; then
+    bad+="netwatch-netprobe "
+  fi
+
+  if [[ -n "$bad" ]]; then
+    test_fail "Installed world-readable despite holding secrets: $bad"
+  else
+    test_pass
+  fi
+}
+
+# install.sh appends the digest settings to the sampler config. The package must
+# do the same, or a .deb install ships no DIGEST_* keys and the digest runs on
+# built-in defaults with no way for the operator to see or change them.
+test_deb_ships_digest_settings() {
+  test_start "Packaging: digest settings are shipped in the sampler config"
+
+  local builder="$SCRIPT_DIR/../scripts/build-deb.sh"
+  if [[ ! -f "$builder" ]]; then
+    test_fail "build-deb.sh not found: $builder"
+    return
+  fi
+
+  if grep -q 'netwatch-digest.conf.*>>.*etc/default/netwatch-netprobe' "$builder"; then
+    test_pass
+  else
+    test_fail "netwatch-digest.conf is never appended to the sampler config"
+  fi
+}
+
 #
 # Daily Digest Tests
 #
@@ -1571,6 +1727,10 @@ test_boot_grace_calculation
 
 # Regression tests (errexit safety)
 test_dryrun_does_not_arm_cooldown
+test_digest_embed_format
+test_deb_declares_conffiles
+test_deb_config_permissions
+test_deb_ships_digest_settings
 test_digest_first_run_has_no_fake_delta
 test_digest_redacts_host_identifiers
 test_digest_template_placeholders_substituted
