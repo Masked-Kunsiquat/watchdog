@@ -34,6 +34,9 @@ NETPROBE_TIMER="/etc/systemd/system/netwatch-netprobe.timer"
 NETPROBE_LOGROTATE="/etc/logrotate.d/netwatch-netprobe"
 NETPROBE_STATE_DIR="/run/netwatch-netprobe"
 NETPROBE_LOG_DIR="/var/log/netwatch"
+DIGEST_SCRIPT="/usr/local/sbin/netwatch-digest.sh"
+DIGEST_UNIT="/etc/systemd/system/netwatch-digest.service"
+DIGEST_TIMER="/etc/systemd/system/netwatch-digest.timer"
 
 # Parse options
 KEEP_CONFIG=false
@@ -101,6 +104,21 @@ fi
 #
 # Stop and disable service
 #
+
+if $SUDO /usr/bin/systemctl is-active --quiet netwatch-digest.timer 2>/dev/null; then
+  log_info "Stopping netwatch-digest timer"
+  $SUDO /usr/bin/systemctl stop netwatch-digest.timer
+fi
+
+if $SUDO /usr/bin/systemctl is-enabled --quiet netwatch-digest.timer 2>/dev/null; then
+  log_info "Disabling netwatch-digest timer"
+  $SUDO /usr/bin/systemctl disable netwatch-digest.timer
+fi
+
+if $SUDO /usr/bin/systemctl is-active --quiet netwatch-digest.service 2>/dev/null; then
+  log_info "Stopping in-flight netwatch-digest run"
+  $SUDO /usr/bin/systemctl stop netwatch-digest.service
+fi
 
 if $SUDO /usr/bin/systemctl is-active --quiet netwatch-netprobe.timer 2>/dev/null; then
   log_info "Stopping netwatch-netprobe timer"
@@ -206,7 +224,8 @@ fi
 #
 
 for f in "$NETPROBE_SCRIPT" "$NETPROBE_UNIT" "$NETPROBE_TIMER" \
-         "$NETPROBE_LOGROTATE" "$NETPROBE_CONFIG_NEW"; do
+         "$NETPROBE_LOGROTATE" "$NETPROBE_CONFIG_NEW" \
+         "$DIGEST_SCRIPT" "$DIGEST_UNIT" "$DIGEST_TIMER"; do
   if [[ -f "$f" ]]; then
     log_info "Removing: $f"
     $SUDO rm -f "$f"

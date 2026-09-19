@@ -1,0 +1,35 @@
+[Unit]
+Description=Netwatch daily diagnostic digest
+Documentation=https://github.com/Masked-Kunsiquat/watchdog
+After=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/default/netwatch-netprobe
+EnvironmentFile=-/etc/default/netwatch-agent
+ExecStart=/usr/local/sbin/netwatch-digest.sh
+
+# Bounded so a wedged NIC cannot leave the digest hanging: it calls ethtool and
+# journalctl, either of which can block while the hardware is stuck.
+TimeoutStartSec=60s
+
+# Hardening. CAP_NET_ADMIN is required for ethtool ioctls. PrivateNetwork must
+# NOT be set - the digest needs to see the real host NIC and reach the webhook.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+CapabilityBoundingSet=CAP_NET_ADMIN
+AmbientCapabilities=CAP_NET_ADMIN
+
+# Writable: the digest state file used for day-over-day deltas
+ReadWritePaths=/var/lib/netwatch-agent
+
+[Install]
+WantedBy=multi-user.target

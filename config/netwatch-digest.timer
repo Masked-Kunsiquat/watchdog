@@ -1,0 +1,32 @@
+[Unit]
+Description=Send the Netwatch daily diagnostic digest
+Documentation=https://github.com/Masked-Kunsiquat/watchdog
+
+[Timer]
+# Fires at a fixed wall-clock time every day. To change it, use a drop-in
+# rather than editing this file (which a package upgrade would replace):
+#
+#   systemctl edit netwatch-digest.timer
+#
+# then set, for example:
+#
+#   [Timer]
+#   OnCalendar=
+#   OnCalendar=*-*-* 21:00:00
+#
+# The empty assignment first is required - OnCalendar accumulates otherwise,
+# and the timer would fire at both times.
+OnCalendar=*-*-* 21:00:00
+
+# Run on the next boot if the machine was off when the timer was due, so an
+# overnight shutdown does not silently skip a day.
+Persistent=true
+
+# Small jitter so the digest does not land at the exact same second daily.
+RandomizedDelaySec=120
+AccuracySec=1m
+
+Unit=netwatch-digest.service
+
+[Install]
+WantedBy=timers.target
