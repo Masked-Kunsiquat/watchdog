@@ -11,6 +11,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Release workflow: on `v*` tags, build and upload artifacts to the GitHub Release.
 - Debian packaging script (`scripts/build-deb.sh`) to build `netwatch-agent_<version>_all.deb` via dpkg-deb (no network), including systemd enablement hooks.
 
+## [v1.2.2] - 2026-09-19
+
+Follow-ups from running v1.2.1 on a real host.
+
+### Fixed
+
+- **Offload labels were ambiguous.** The status summary truncated ethtool
+  feature names to three characters, so `generic-segmentation-offload` and
+  `generic-receive-offload` both rendered as `gen`:
+  `offloads: tcp=off gen=off gen=off`. Now maps explicitly to `tso/gso/gro`,
+  which are also the names `ethtool -K` accepts, so the output is directly
+  actionable.
+- **Three scripts were orphaned on uninstall.**
+  `netwatch-nic-remediation.sh`, `netwatch-postmortem.sh`, and
+  `netwatch-setup-journald.sh` have shipped since v1.1.0 but were never added
+  to `uninstall.sh`, leaving them in `/usr/local/sbin` after removal. The
+  `.deb` path was unaffected, since dpkg removes packaged files automatically.
+- Suggested commands in the summary printed bare names, which only resolve if
+  the install directory is on `PATH`. They now print absolute paths.
+
+### Added
+
+- **`netwatch-config-merge.sh`.** dpkg never merges config files: when a local
+  edit collides with an upstream change it prompts, and keeping your version -
+  which is correct, since it preserves the webhook URL and `DRY_RUN` - means
+  new settings are absent and the features behind them stay silently off.
+  That is how `DIGEST_FORMAT` shipped in v1.2.1 while embeds remained
+  unusable without manual work.
+
+  The tool compares the live config against dpkg's `.dpkg-dist` and appends
+  only the missing keys, with their documentation comments, after taking a
+  timestamped backup. It never modifies a value already set.
+
+- **Config drift is reported in the status summary**, so the gap is visible at
+  install time rather than discovered later.
+
 ## [v1.2.1] - 2026-09-18
 
 **Packaging fix.** Upgrading to v1.2.0 via `dpkg -i` silently overwrote
