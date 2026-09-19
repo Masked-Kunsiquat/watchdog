@@ -36,6 +36,7 @@ DIGEST_SCRIPT="/usr/local/sbin/netwatch-digest.sh"
 DIGEST_UNIT="/etc/systemd/system/netwatch-digest.service"
 DIGEST_TIMER="/etc/systemd/system/netwatch-digest.timer"
 SUMMARY_SCRIPT="/usr/local/sbin/netwatch-status-summary.sh"
+MERGE_SCRIPT="/usr/local/sbin/netwatch-config-merge.sh"
 NETPROBE_LOG_DIR="/var/log/netwatch"
 
 # Source files
@@ -52,6 +53,7 @@ SRC_DIGEST_CONF="$PROJECT_ROOT/config/netwatch-digest.conf"
 SRC_DIGEST_UNIT="$PROJECT_ROOT/config/netwatch-digest.service"
 SRC_DIGEST_TIMER="$PROJECT_ROOT/config/netwatch-digest.timer"
 SRC_SUMMARY="$PROJECT_ROOT/scripts/netwatch-status-summary.sh"
+SRC_MERGE="$PROJECT_ROOT/scripts/netwatch-config-merge.sh"
 
 # Install the NIC sampler unless explicitly disabled: INSTALL_NETPROBE=0
 INSTALL_NETPROBE="${INSTALL_NETPROBE:-1}"
@@ -179,6 +181,10 @@ $SUDO chown root:root "$PERSIST_DIR"
 $SUDO cp "$SRC_SUMMARY" "$SUMMARY_SCRIPT"
 $SUDO chmod 0755 "$SUMMARY_SCRIPT"
 $SUDO chown root:root "$SUMMARY_SCRIPT"
+
+$SUDO cp "$SRC_MERGE" "$MERGE_SCRIPT"
+$SUDO chmod 0755 "$MERGE_SCRIPT"
+$SUDO chown root:root "$MERGE_SCRIPT"
 
 #
 # Install NIC health sampler (optional companion)
@@ -314,6 +320,7 @@ fi
 
 echo "Quick reference:"
 echo "  - Status again:   netwatch-status-summary.sh"
+echo "  - New settings:   netwatch-config-merge.sh"
 echo "  - View logs:      journalctl -u netwatch-agent -f"
 echo "  - NIC anomalies:  journalctl -t netwatch-netprobe -p crit --no-pager"
 echo "  - Send a digest:  systemctl start netwatch-digest.service"

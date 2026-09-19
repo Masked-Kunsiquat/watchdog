@@ -29,6 +29,11 @@ NC='\033[0m'
 CONFIG_FILE="${CONFIG_FILE:-/etc/default/netwatch-agent}"
 NETPROBE_CONFIG="${NETPROBE_CONFIG:-/etc/default/netwatch-netprobe}"
 
+# Where the companion tools live. Derived from this script's own location
+# rather than hardcoded, so the suggested commands stay correct if the install
+# prefix ever changes, and when running from a checkout.
+SBIN_DIR="$(cd "$(/usr/bin/dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)" || SBIN_DIR="/usr/local/sbin"
+
 # Read a KEY=VALUE from a config file without sourcing it, so a malformed file
 # cannot execute anything or abort this script.
 cfg() {
@@ -135,7 +140,17 @@ if [[ -f /usr/local/sbin/netwatch-netprobe.sh ]]; then
   if [[ -n "$IFACE" ]] && [[ -x /usr/sbin/ethtool ]]; then
     OFFLOADS=$(/usr/sbin/ethtool -k "$IFACE" 2>/dev/null \
       | /bin/grep -E '^(tcp-segmentation-offload|generic-segmentation-offload|generic-receive-offload):' \
-      | /usr/bin/awk '{printf "%s=%s ", substr($1,1,3), $2}') || true
+      | /usr/bin/awk '{
+          name = $1; sub(/:$/, "", name)
+          # Map to the short names ethtool -K accepts, so the output can be
+          # acted on directly. Truncating instead would render both
+          # generic-* features as "gen".
+          if (name == "tcp-segmentation-offload")          key = "tso"
+          else if (name == "generic-segmentation-offload") key = "gso"
+          else if (name == "generic-receive-offload")      key = "gro"
+          else                                             key = name
+          printf "%s=%s ", key, $2
+        }') || true
 
     if [[ -n "${OFFLOADS:-}" ]]; then
       if echo "$OFFLOADS" | /bin/grep -q '=on'; then
@@ -155,13 +170,60 @@ if [[ -f /usr/local/sbin/netwatch-netprobe.sh ]]; then
   [[ -n "${DIGEST_TIME:-}" ]] && echo "  digest at:   $DIGEST_TIME daily"
 fi
 
+# --- Config drift after an upgrade ---
+#
+# dpkg never merges config files: when a local edit collides with an upstream
+# change it prompts, and keeping your version means new settings are absent.
+# Nothing breaks - every key has a default - but the features behind them stay
+# silently off, which is how a requested feature can ship and still not work.
+DRIFT=""
+for LIVE in "$CONFIG_FILE" "$NETPROBE_CONFIG"; do
+  [[ -f "$LIVE" ]] || continue
+
+  REF=""
+  [[ -f "${LIVE}.dpkg-dist" ]] && REF="${LIVE}.dpkg-dist"
+  [[ -z "$REF" ]] && [[ -f "${LIVE}.new" ]] && REF="${LIVE}.new"
+  [[ -n "$REF" ]] || continue
+
+  COUNT=$(/usr/bin/comm -13 \
+    <(/bin/grep -oE '^[[:space:]]*[A-Z_][A-Z0-9_]*=' "$LIVE" 2>/dev/null | /bin/sed 's/[[:space:]]*//g; s/=$//' | /usr/bin/sort -u) \
+    <(/bin/grep -oE '^[[:space:]]*[A-Z_][A-Z0-9_]*=' "$REF" 2>/dev/null | /bin/sed 's/[[:space:]]*//g; s/=$//' | /usr/bin/sort -u) \
+    2>/dev/null | /usr/bin/wc -l | /usr/bin/tr -d ' ') || COUNT=0
+
+  if [[ "${COUNT:-0}" =~ ^[0-9]+$ ]] && (( COUNT > 0 )); then
+    DRIFT+="$(/usr/bin/basename "$LIVE"):$COUNT "
+  fi
+done
+
+if [[ -n "$DRIFT" ]]; then
+  # Print an absolute path when we can resolve one. A bare command name only
+  # works if the install directory happens to be on PATH, which is true for
+  # root's login shell on Debian but not guaranteed otherwise - and these lines
+  # are meant to be copy-pasted.
+  MERGE_CMD="netwatch-config-merge.sh"
+  if [[ -x "$SBIN_DIR/netwatch-config-merge.sh" ]]; then
+    MERGE_CMD="$SBIN_DIR/netwatch-config-merge.sh"
+  fi
+
+  echo
+  echo -e "  ${YELLOW}config:      new settings available${NC} (${DRIFT% })"
+  echo "               these are missing from your config, so the features"
+  echo "               behind them are off. review and add with:"
+  echo "                 $MERGE_CMD"
+  echo "                 sudo $MERGE_CMD --apply"
+fi
+
 # --- Journal persistence, required for post-mortem work ---
 echo
 if [[ -d /var/log/journal ]]; then
   echo -e "  journal:     ${GREEN}persistent${NC} (previous boots readable)"
 else
+  JOURNALD_CMD="netwatch-setup-journald.sh"
+  if [[ -x "$SBIN_DIR/netwatch-setup-journald.sh" ]]; then
+    JOURNALD_CMD="$SBIN_DIR/netwatch-setup-journald.sh"
+  fi
   echo -e "  journal:     ${YELLOW}volatile${NC} - 'journalctl -b -1' will be empty"
-  echo "               fix: netwatch-setup-journald.sh --apply"
+  echo "               fix: sudo $JOURNALD_CMD --apply"
 fi
 
 echo

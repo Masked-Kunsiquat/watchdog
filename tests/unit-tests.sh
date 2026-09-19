@@ -923,6 +923,168 @@ CFGEOF
   fi
 }
 
+# Commands the summary suggests are meant to be copy-pasted. A bare name only
+# resolves if the install directory is on PATH - true for root's login shell on
+# Debian, not guaranteed otherwise - so an absolute path is printed whenever the
+# companion tool can be located.
+test_summary_suggests_absolute_paths() {
+  test_start "Summary: suggested commands resolve to absolute paths"
+
+  local summary="$SCRIPT_DIR/../scripts/netwatch-status-summary.sh"
+  local merge="$SCRIPT_DIR/../scripts/netwatch-config-merge.sh"
+
+  if [[ ! -f "$summary" ]] || [[ ! -f "$merge" ]]; then
+    test_fail "Summary or merge script not found"
+    return
+  fi
+
+  setup_mock_env
+  local sbin="$MOCK_DIR/sbin"
+  mkdir -p "$sbin"
+  cp "$summary" "$merge" "$sbin/"
+  chmod +x "$sbin"/*.sh
+
+  printf 'DRY_RUN=1
+TARGETS="1.1.1.1"
+MIN_OK=1
+' > "$MOCK_DIR/agent"
+  printf 'DIGEST_ENABLED=1
+' > "$MOCK_DIR/netprobe"
+  printf 'DIGEST_ENABLED=1
+DIGEST_FORMAT="embed"
+' > "$MOCK_DIR/netprobe.dpkg-dist"
+
+  local out
+  out=$(CONFIG_FILE="$MOCK_DIR/agent" NETPROBE_CONFIG="$MOCK_DIR/netprobe"     bash "$sbin/netwatch-status-summary.sh" 2>&1) || true
+
+  # Both suggested lines must carry the absolute path, not just one - a loose
+  # check would pass while half the output still showed a bare name.
+  local absolute bare
+  absolute=$(echo "$out" | grep -cF "$sbin/netwatch-config-merge.sh") || absolute=0
+  bare=$(echo "$out" | grep -cE '^ +(sudo )?netwatch-config-merge\.sh') || bare=0
+
+  local result="fail"
+  if (( absolute >= 2 )) && (( bare == 0 )); then
+    result="ok"
+  fi
+
+  cleanup_mock_env
+
+  if [[ "$result" == "ok" ]]; then
+    test_pass
+  else
+    test_fail "Summary suggested a bare command name instead of an absolute path"
+  fi
+}
+
+# Every script the package installs must also be removed by uninstall.sh.
+# Three diagnostic tools shipped since v1.1.0 were never added to the removal
+# list and sat orphaned in /usr/local/sbin after an uninstall.
+test_uninstall_removes_every_packaged_script() {
+  test_start "Uninstall: removes every script the package installs"
+
+  local builder="$SCRIPT_DIR/../scripts/build-deb.sh"
+  local uninstaller="$SCRIPT_DIR/../scripts/uninstall.sh"
+
+  if [[ ! -f "$builder" ]] || [[ ! -f "$uninstaller" ]]; then
+    test_fail "build-deb.sh or uninstall.sh not found"
+    return
+  fi
+
+  local orphans="" script
+  while IFS= read -r script; do
+    [[ -n "$script" ]] || continue
+    grep -qF "$script" "$uninstaller" || orphans+="$script "
+  done < <(grep -oE 'usr/local/sbin/[a-z-]+\.sh' "$builder" | sed 's|.*/||' | sort -u)
+
+  if [[ -z "$orphans" ]]; then
+    test_pass
+  else
+    test_fail "Installed but never removed on uninstall: $orphans"
+  fi
+}
+
+# dpkg never merges config files, so keeping your version on upgrade leaves new
+# settings absent - the features behind them silently stay off. The merge tool
+# must add only what is missing and never touch a value already set.
+test_config_merge_preserves_values() {
+  test_start "Config merge: adds missing keys without altering existing values"
+
+  local merge="$SCRIPT_DIR/../scripts/netwatch-config-merge.sh"
+  if [[ ! -f "$merge" ]]; then
+    test_fail "Merge script not found: $merge"
+    return
+  fi
+
+  setup_mock_env
+  local d="$MOCK_DIR/etc/default"
+  mkdir -p "$d"
+
+  # A customised config missing a new key, and the shipped reference
+  printf 'DIGEST_ENABLED=1
+DIGEST_WINDOW_HOURS=6
+' > "$d/netwatch-netprobe"
+  printf 'DIGEST_ENABLED=1
+DIGEST_WINDOW_HOURS=24
+DIGEST_FORMAT="text"
+'     > "$d/netwatch-netprobe.dpkg-dist"
+
+  local patched="$MOCK_DIR/merge.sh"
+  # shellcheck disable=SC2016  # literal source text, not an expansion
+  sed -e "s|/etc/default/netwatch|$d/netwatch|g"       -e 's|if \[\[ \$EUID -ne 0 \]\]; then|if false; then|' "$merge" > "$patched"
+
+  bash "$patched" --apply >/dev/null 2>&1 || true
+
+  local result="ok"
+  # The new key must be added
+  grep -q '^DIGEST_FORMAT=' "$d/netwatch-netprobe" || result="missing-new-key"
+  # The customised value must survive
+  grep -q '^DIGEST_WINDOW_HOURS=6' "$d/netwatch-netprobe" || result="lost-custom-value"
+  # The shipped default must NOT overwrite it
+  grep -q '^DIGEST_WINDOW_HOURS=24' "$d/netwatch-netprobe" && result="clobbered-with-default"
+
+  cleanup_mock_env
+
+  if [[ "$result" == "ok" ]]; then
+    test_pass
+  else
+    test_fail "Merge behaved incorrectly: $result"
+  fi
+}
+
+# The offload labels must be the short names ethtool -K accepts, so the summary
+# can be acted on directly. Truncating the feature names instead rendered both
+# generic-* features as "gen", making the output ambiguous.
+test_summary_offload_labels_unambiguous() {
+  test_start "Summary: offload labels are tso/gso/gro, not truncated"
+
+  local summary="$SCRIPT_DIR/../scripts/netwatch-status-summary.sh"
+  if [[ ! -f "$summary" ]]; then
+    test_fail "Summary script not found: $summary"
+    return
+  fi
+
+  # Guard the source: substr truncation cannot distinguish the generic-* pair
+  # shellcheck disable=SC2016  # literal source text, not an expansion
+  if grep -q 'substr($1,1,3)' "$summary"; then
+    test_fail "Offload labels are truncated; both generic-* features render as gen"
+    return
+  fi
+
+  # Each short name must be mapped explicitly
+  local missing=""
+  local k
+  for k in tso gso gro; do
+    grep -q "\"$k\"" "$summary" || missing+="$k "
+  done
+
+  if [[ -n "$missing" ]]; then
+    test_fail "No explicit mapping for: $missing"
+  else
+    test_pass
+  fi
+}
+
 # Every detect_iface implementation must refuse to report the bridge. Its whole
 # purpose is finding the hardware the WAN path depends on - and a bridge shows
 # nominal state while the NIC beneath it is wedged, so naming vmbr0 would make
@@ -1930,6 +2092,10 @@ test_digest_embed_format
 test_digest_embed_escapes_window_hours
 test_summary_reports_armed_state
 test_summary_does_not_source_config
+test_summary_suggests_absolute_paths
+test_uninstall_removes_every_packaged_script
+test_config_merge_preserves_values
+test_summary_offload_labels_unambiguous
 test_detect_iface_never_reports_bridge
 test_deb_declares_conffiles
 test_deb_config_permissions
