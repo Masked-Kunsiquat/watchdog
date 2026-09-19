@@ -11,6 +11,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Release workflow: on `v*` tags, build and upload artifacts to the GitHub Release.
 - Debian packaging script (`scripts/build-deb.sh`) to build `netwatch-agent_<version>_all.deb` via dpkg-deb (no network), including systemd enablement hooks.
 
+## [v1.2.1] - 2026-09-18
+
+**Packaging fix.** Upgrading to v1.2.0 via `dpkg -i` silently overwrote
+`/etc/default/netwatch-agent`, losing the webhook URL, `DRY_RUN`, and custom
+targets. Observed on a real host.
+
+### Fixed
+
+- **Config files are now declared as dpkg conffiles.** Without a
+  `DEBIAN/conffiles` entry, dpkg treats them as ordinary package files and
+  replaces them on every upgrade. Declared, dpkg preserves a modified file and
+  reports the difference instead.
+- **Configs are installed 0640, not 0644.** `/etc/default/netwatch-agent` can
+  hold a webhook token and should not be world-readable. `install.sh` already
+  used 0640; the package now matches.
+- **The package ships the digest settings.** `install.sh` appends them to the
+  sampler config, but `build-deb.sh` did not - so a `.deb` install had no
+  `DIGEST_*` keys and the digest ran on built-in defaults with no visible way
+  to change them.
+- `postinst` documents that `mkdir -p` leaves existing state alone, so
+  `metrics.dat` and the digest baseline survive an upgrade.
+
+### Added
+
+- **`DIGEST_FORMAT=embed`** renders the digest as a Discord embed: a
+  verdict-coloured left border (green `HOLDING`, amber `ATTENTION`, red
+  `DEGRADED`), values in a field grid, and a timestamp. Default stays `text`,
+  since other webhook services do not understand the embeds array.
+- JSON escaping extracted into a reusable `json_escape()` now that both payload
+  shapes need it.
+
+### Documentation
+
+- **Removed `GAMEPLAN.md`.** It still read "Status: Ready for implementation"
+  and planned building v1.0.0 as future work. Git history preserves it; the
+  remaining wishlist moved to AGENTS.md §12.
+- **AGENTS.md extended to all three components.** It specified only the WAN
+  agent and never mentioned the sampler, digest, or e1000e work. Adds §13
+  covering both timer-driven components and the remediation tooling, and
+  updates Non-Goals (DNS/HTTP checks shipped in v1.0.0; the webhook is a single
+  `curl` call, not an alerting stack).
+- **`docs/integration-testing.md`**: fixed a broken clone URL and a stale
+  expected-log line, and added six manual tests covering interface resolution,
+  offload drift, digest verdict and redaction, delta baselines, the remediation
+  round-trip, and config survival across a package upgrade.
+
 ## [v1.2.0] - 2026-09-18
 
 **Daily diagnostic digest**, plus a fix for a regression introduced in v1.1.0.
@@ -223,7 +269,7 @@ This release marks the completion of Phase 5 with comprehensive documentation, t
 |----------|---------|----------|
 | [README.md](README.md) | Quick start, operations, troubleshooting | Operators/Users |
 | [AGENTS.md](AGENTS.md) | Technical specification | Developers |
-| [GAMEPLAN.md](GAMEPLAN.md) | Implementation phases | Project management |
+| GAMEPLAN.md (removed in v1.2.1) | Implementation phases | Project management |
 | [CHANGELOG.md](CHANGELOG.md) | Version history | All stakeholders |
 
 ### Stability Notes

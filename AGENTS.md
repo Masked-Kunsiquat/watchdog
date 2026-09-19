@@ -1,39 +1,74 @@
-# AGENTS.md — Netwatch (Proxmox WAN Watchdog)
+# AGENTS.md — Netwatch (Proxmox network watchdog and NIC diagnostics)
 
-Target: Single-node Proxmox VE host (Debian-based) Status: Authoritative spec for codegen (Codex) to implement from scratch
+Target: Single-node Proxmox VE host (Debian-based)
+Status: Authoritative spec. Sections 0–11 specify the WAN agent, which was the
+original scope; section 13 specifies the NIC sampler and daily digest added
+later.
 
 ---
 
 ## 0) Objective
 
-Build a **robust WAN watchdog** that reboots the host after a strict, configurable duration of **continuous WAN loss**, with safety rails and clean systemd integration. Runtime must remain **shell + systemd only** on the host.
+Netwatch addresses two failures that look identical from outside the host but
+have different causes:
+
+1. **WAN outage** — upstream connectivity is gone. Reboot the host after a
+   strict, configurable duration of **continuous** loss, with safety rails.
+2. **Local NIC hang** — the kernel is alive but the interface is wedged. On
+   Intel I217/I218/I219 NICs the `e1000e` TX ring can stall while the machine
+   keeps running. Diagnose it, apply the documented workaround, and confirm it
+   holds.
+
+Runtime must remain **shell + systemd only** on the host. This is a constraint,
+not a preference: on a machine whose job is staying reachable, every added
+dependency is another way for the watchdog itself to fail.
 
 ---
 
 ## 1) Deliverables
 
+**WAN agent** (sections 2–11):
+
 1. **Agent script**: `/usr/local/sbin/netwatch-agent.sh` (Bash)
-2. **Config file**: `/etc/default/netwatch-agent` (key=value; root-only)
+2. **Config file**: `/etc/default/netwatch-agent` (key=value; root-only, 0640)
 3. **systemd unit**: `/etc/systemd/system/netwatch-agent.service`
-4. **Installer**: single-file `install.sh` (idempotent)
-5. **Uninstaller**: `uninstall.sh`
-6. **Docs**: README (quick start, test plan, ops), CHANGELOG, LICENSE
-7. **Optional**: `.deb` build script (pure `dpkg-deb`)
+
+**NIC tooling** (section 13):
+
+4. **Sampler**: `/usr/local/sbin/netwatch-netprobe.sh` + service and timer
+5. **Digest**: `/usr/local/sbin/netwatch-digest.sh` + service and timer
+6. **Shared config**: `/etc/default/netwatch-netprobe` (sampler and digest)
+7. **Remediation**: `scripts/netwatch-nic-remediation.sh`
+8. **Forensics**: `scripts/netwatch-postmortem.sh`, `scripts/netwatch-setup-journald.sh`
+
+**Packaging and docs**:
+
+9. **Installer** / **uninstaller**: idempotent, sudo-optional
+10. **`.deb` build**: pure `dpkg-deb`, no network. Config files MUST be declared
+    in `DEBIAN/conffiles` — without that, dpkg silently overwrites local edits
+    on every upgrade.
+11. **Docs**: README, CHANGELOG, LICENSE, `docs/nic-diagnostics.md`
 
 ---
 
 ## 2) Non‑Goals
 
 - Cluster fencing/HA policy (handled separately by PVE‑HA)
-- DNS/HTTP layer checks (initial release is ICMP reachability)
-- Long-running alerting stack (journald/syslog only; forwarders later)
+- Long-running alerting stack (journald/syslog authoritative; no log shipping
+  or forwarding agent on the host)
+- Automatic NIC remediation — the tooling diagnoses and can apply a fix, but
+  only when an operator runs it
+- Any runtime dependency beyond Bash, systemd, and standard utilities
 
-> **Note (v1.1.0).** The NIC health sampler writes a plain-text mirror to
-> `/var/log/netwatch/net-health.log` in addition to journald. This does not
-> relax the non-goal above: the journal remains authoritative, the file is a
-> convenience for `tail`/`grep` correlation, it is rotated by logrotate, and it
-> can be disabled entirely with `NETPROBE_LOG_TO_FILE=0`. No log shipping,
-> forwarding, or external alerting stack is implied.
+> **DNS/HTTP checks** were a non-goal in the initial release and shipped in
+> v1.0.0 as optional `HEALTH_CHECK_MODE` values. ICMP remains the default.
+
+> **On the logging non-goal.** The NIC sampler writes a plain-text mirror to
+> `/var/log/netwatch/net-health.log`, and the digest can POST to a webhook.
+> Neither relaxes the non-goal: the journal stays authoritative, the file is a
+> convenience for `tail`/`grep` correlation (rotated by logrotate, disabled
+> with `NETPROBE_LOG_TO_FILE=0`), and the webhook is a single `curl` call with
+> no queue, retry, or daemon behind it.
 
 ---
 
@@ -275,5 +310,96 @@ done
 
 ## 12) Future Extensions
 
-- HTTP/TCP checks; per-interface routing; jitter-aware timers; Prometheus exporter; CLI to render configs per host; Node-based builder that ships `.deb` over SSH (host stays Bash-only).
+Not committed to, and each must preserve the Bash + systemd constraint:
+
+- Per-interface routing table awareness
+- Prometheus metrics exporter
+- Multi-host orchestration or a dashboard
+- Jitter-aware adaptive timers
+- A builder that ships the `.deb` over SSH (the host stays Bash-only)
+
+Delivered since the original plan: HTTP/TCP health checks (v1.0.0), webhook
+alerting (v0.5.0), NIC sampling and e1000e remediation (v1.1.0), daily digest
+(v1.2.0).
+
+---
+
+## 13) NIC Sampler and Daily Digest
+
+Added after the original spec. Both are **timer-driven and independent of the
+agent**: they report regardless of `DRY_RUN`, and either can be disabled
+without affecting the watchdog.
+
+### 13.1 Why a separate component
+
+The agent probes WAN reachability. A wedged local NIC looks identical to it —
+targets stop answering — so the agent alone cannot distinguish "the ISP is
+down" from "my NIC hung". The sampler observes the hardware directly.
+
+### 13.2 Sampler (`netwatch-netprobe.sh`)
+
+Runs every 60s via `netwatch-netprobe.timer` (`Type=oneshot`).
+
+**Must resolve the physical interface, not the bridge.** On Proxmox the default
+route points at `vmbr0`, but counters live on the enslaved port — and the
+bridge reports nominal state while the NIC beneath it is wedged. Descend
+through `/sys/class/net/<bridge>/brif/`, skipping `veth*`, `tap*`, `fwln*`,
+`fwpr*`, `vnet*`.
+
+Samples: link state and carrier counts from sysfs; `tx_timeout_count`,
+`tx_restart_queue`, `rx_missed_errors`, `rx_crc_errors` from `ethtool -S`;
+offload state from `ethtool -k`; gateway reachability; and a scan of
+`journalctl -k` for e1000e hang signatures.
+
+Requirements:
+
+- **Deltas need a real baseline.** Track whether counters were actually read.
+  If `ethtool` is unavailable, carry the previous values forward rather than
+  storing placeholder zeros — otherwise the next successful sample reports the
+  real value as an overnight spike.
+- **Anomalies log at `daemon.crit`**, which forces an immediate journald fsync
+  so the record survives a hard power-cycle. Routine samples stay at `info`.
+- **`TimeoutStartSec`** must be set: a wedged NIC can block `ethtool`
+  indefinitely, and a oneshot unit would otherwise accumulate stuck instances.
+- Never set `PrivateNetwork=true`; the unit needs the real host network.
+
+### 13.3 Digest (`netwatch-digest.sh`)
+
+Runs daily via `netwatch-digest.timer` (`OnCalendar`, default 21:00). Emits a
+`HOLDING` / `ATTENTION` / `DEGRADED` verdict plus NIC, counter, and WAN
+summaries.
+
+Requirements:
+
+- **Redact by default.** IPs and MACs are never included. The hostname requires
+  an explicit `DIGEST_INCLUDE_HOSTNAME=1`, because the digest typically goes to
+  a third-party service.
+- **Escape every dynamic value** through `json_escape` before it enters the
+  payload — including config-sourced values like `DIGEST_WINDOW_HOURS`. RFC 8259
+  forbids raw U+0000–U+001F in strings, so control characters need escaping,
+  not just quotes and backslashes.
+- **`DIGEST_FORMAT`**: `text` (default, any webhook service) or `embed`
+  (Discord only — a verdict-coloured border and field grid). The payload shapes
+  differ, so `embed` must stay opt-in.
+- Configuration lives in `/etc/default/netwatch-netprobe`; the digest does not
+  source a file of its own.
+
+### 13.4 Remediation and forensics
+
+`scripts/netwatch-nic-remediation.sh` — `--status` / `--apply-offloads` /
+`--revert-offloads`. Nothing is applied automatically.
+
+- Snapshot the pre-change offload state before applying, so revert restores
+  exactly what was there rather than blanket-enabling everything.
+- **Refuse to apply if the snapshot fails** — an unrevertable change is worse
+  than no change.
+- Persist via a `post-up` hook, because the driver re-enables offloads on
+  link-up events. On a bridged host the physical port typically has no `auto`
+  stanza, where `post-up` is unreliable, so attach the hook to the bridge
+  stanza while naming the physical port explicitly.
+
+`scripts/netwatch-postmortem.sh` reads the previous boot; it requires
+persistent journald, which `scripts/netwatch-setup-journald.sh` configures.
+Reports written with `--output` must be mode 0600 — they embed journal
+excerpts, MACs, and IPs.
 

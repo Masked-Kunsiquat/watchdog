@@ -730,6 +730,361 @@ EOF
   fi
 }
 
+# DIGEST_FORMAT=embed emits a Discord embed rather than a content string. The
+# shape differs entirely, so this guards that the verdict maps to the right
+# colour and that the payload is still valid JSON.
+test_digest_embed_format() {
+  test_start "Digest: embed format produces a valid coloured payload"
+
+  local digest="$SCRIPT_DIR/../src/netwatch-digest.sh"
+  if [[ ! -f "$digest" ]]; then
+    test_fail "Digest script not found: $digest"
+    return
+  fi
+
+  # Each verdict needs a distinct colour, or the border conveys nothing
+  local missing=""
+  local v
+  for v in HOLDING ATTENTION DEGRADED; do
+    grep -qE "^ *$v\)" "$digest" || missing+="$v "
+  done
+  if [[ -n "$missing" ]]; then
+    test_fail "No embed colour mapped for: $missing"
+    return
+  fi
+
+  # Text must remain the default: other webhook services reject embeds
+  if ! grep -q 'DIGEST_FORMAT:=text' "$digest"; then
+    test_fail "DIGEST_FORMAT does not default to text"
+    return
+  fi
+
+  setup_mock_env
+  local persist="$MOCK_DIR/persist"
+  mkdir -p "$persist" "$MOCK_DIR/bin"
+
+  cat > "$MOCK_DIR/bin/curl" <<'CURLEOF'
+#!/usr/bin/env bash
+while [ $# -gt 0 ]; do
+  if [ "$1" = "-d" ]; then printf '%s' "$2" > "$CAPTURE_FILE"; fi
+  shift
+done
+exit 0
+CURLEOF
+  chmod +x "$MOCK_DIR/bin/curl"
+
+  local capture="$MOCK_DIR/embed.json"
+  local patched="$MOCK_DIR/digest.sh"
+  sed "s|/usr/bin/curl|$MOCK_DIR/bin/curl|g" "$digest" > "$patched"
+
+  export CAPTURE_FILE="$capture"
+  export PERSIST_DIR="$persist"
+  export NETPROBE_IFACE="lo"
+  export DIGEST_FORMAT="embed"
+  export WEBHOOK_ENABLED=1
+  export WEBHOOK_URL="https://example.invalid/hook"
+  bash "$patched" >/dev/null 2>&1 || true
+  unset CAPTURE_FILE PERSIST_DIR NETPROBE_IFACE DIGEST_FORMAT WEBHOOK_ENABLED WEBHOOK_URL
+
+  local result="fail"
+  if [[ -f "$capture" ]]; then
+    if grep -q '"embeds"' "$capture" && grep -q '"color"' "$capture"; then
+      # No raw control characters, same requirement as the text payload
+      if ! LC_ALL=C grep -q '[-]' "$capture"; then
+        result="ok"
+      fi
+    fi
+  fi
+
+  cleanup_mock_env
+
+  if [[ "$result" == "ok" ]]; then
+    test_pass
+  else
+    test_fail "Embed payload missing embeds/color, or contained a raw control character"
+  fi
+}
+
+# DIGEST_WINDOW_HOURS is operator-editable config interpolated into the embed
+# field names. Unescaped, a quote in it produces a malformed field name
+# ("Hangs (24"xh)") that invalidates the entire payload.
+test_digest_embed_escapes_window_hours() {
+  test_start "Digest: embed escapes DIGEST_WINDOW_HOURS"
+
+  local digest="$SCRIPT_DIR/../src/netwatch-digest.sh"
+  if [[ ! -f "$digest" ]]; then
+    test_fail "Digest script not found: $digest"
+    return
+  fi
+
+  # Guard the source: the raw value must not be interpolated into a field name
+  if grep -qE '\\"name\\":\\"(Hangs|WAN) \(\$\{DIGEST_WINDOW_HOURS\}' "$digest"; then
+    test_fail "DIGEST_WINDOW_HOURS is interpolated raw into an embed field name"
+    return
+  fi
+
+  setup_mock_env
+  local persist="$MOCK_DIR/persist"
+  mkdir -p "$persist" "$MOCK_DIR/bin"
+
+  cat > "$MOCK_DIR/bin/curl" <<'CURLEOF'
+#!/usr/bin/env bash
+while [ $# -gt 0 ]; do
+  if [ "$1" = "-d" ]; then printf '%s' "$2" > "$CAPTURE_FILE"; fi
+  shift
+done
+exit 0
+CURLEOF
+  chmod +x "$MOCK_DIR/bin/curl"
+
+  local capture="$MOCK_DIR/embed.json"
+  local patched="$MOCK_DIR/digest.sh"
+  sed "s|/usr/bin/curl|$MOCK_DIR/bin/curl|g" "$digest" > "$patched"
+
+  export CAPTURE_FILE="$capture"
+  export PERSIST_DIR="$persist"
+  export NETPROBE_IFACE="lo"
+  export DIGEST_FORMAT="embed"
+  export DIGEST_WINDOW_HOURS='24"x'
+  export WEBHOOK_ENABLED=1
+  export WEBHOOK_URL="https://example.invalid/hook"
+  bash "$patched" >/dev/null 2>&1 || true
+  unset CAPTURE_FILE PERSIST_DIR NETPROBE_IFACE DIGEST_FORMAT DIGEST_WINDOW_HOURS
+  unset WEBHOOK_ENABLED WEBHOOK_URL
+
+  local result="fail"
+  if [[ -f "$capture" ]]; then
+    if python3 -c "import json; json.load(open('$capture'))" 2>/dev/null       || python -c "import json; json.load(open('$capture'))" 2>/dev/null; then
+      result="ok"
+    else
+      # No parser available: the quote must appear escaped inside the field
+      # name. \134 is the octal escape for a backslash, which avoids quoting
+      # one inside a shell literal.
+      local bs esc_quote
+      bs=$(printf '\134')
+      esc_quote="${bs}\""
+      grep -qF "Hangs (24${esc_quote}xh)" "$capture" && result="ok"
+    fi
+  fi
+
+  cleanup_mock_env
+
+  if [[ "$result" == "ok" ]]; then
+    test_pass
+  else
+    test_fail "A quote in DIGEST_WINDOW_HOURS produced an invalid embed payload"
+  fi
+}
+
+# After an install or upgrade, the operator needs to know what is actually
+# armed - not just which files were copied. A package upgrade that silently
+# reset DRY_RUN to 0 would otherwise look identical to a clean install.
+test_summary_reports_armed_state() {
+  test_start "Summary: reports DRY_RUN state prominently"
+
+  local summary="$SCRIPT_DIR/../scripts/netwatch-status-summary.sh"
+  if [[ ! -f "$summary" ]]; then
+    test_fail "Summary script not found: $summary"
+    return
+  fi
+
+  setup_mock_env
+  local cfg="$MOCK_DIR/agent.conf"
+
+  # Dry-run must read as safe
+  cat > "$cfg" <<'CFGEOF'
+HEALTH_CHECK_MODE="icmp"
+TARGETS="1.1.1.1 8.8.8.8"
+MIN_OK=1
+DOWN_WINDOW_SECONDS=600
+DRY_RUN=1
+WEBHOOK_ENABLED=1
+CFGEOF
+
+  local dry armed
+  dry=$(CONFIG_FILE="$cfg" NETPROBE_CONFIG="$MOCK_DIR/none" bash "$summary" 2>&1 || true)
+
+  # DRY_RUN=0 must be called out as ARMED
+  sed -i 's/DRY_RUN=1/DRY_RUN=0/' "$cfg"
+  armed=$(CONFIG_FILE="$cfg" NETPROBE_CONFIG="$MOCK_DIR/none" bash "$summary" 2>&1 || true)
+
+  cleanup_mock_env
+
+  if ! echo "$dry" | grep -qi 'dry-run'; then
+    test_fail "DRY_RUN=1 was not reported as dry-run"
+  elif echo "$dry" | grep -q 'ARMED'; then
+    test_fail "DRY_RUN=1 was wrongly reported as ARMED"
+  elif ! echo "$armed" | grep -q 'ARMED'; then
+    test_fail "DRY_RUN=0 was not reported as ARMED"
+  elif ! echo "$armed" | grep -q '600s'; then
+    test_fail "The reboot window was not shown when armed"
+  else
+    test_pass
+  fi
+}
+
+# Every detect_iface implementation must refuse to report the bridge. Its whole
+# purpose is finding the hardware the WAN path depends on - and a bridge shows
+# nominal state while the NIC beneath it is wedged, so naming vmbr0 would make
+# the reported offload state and counters meaningless.
+test_detect_iface_never_reports_bridge() {
+  test_start "detect_iface: never falls back to the bridge name"
+
+  local missing=""
+  local f
+  for f in "$SCRIPT_DIR/../scripts/netwatch-status-summary.sh"            "$SCRIPT_DIR/../src/netwatch-netprobe.sh"            "$SCRIPT_DIR/../src/netwatch-digest.sh"; do
+    [[ -f "$f" ]] || { missing+="$(basename "$f") "; continue; }
+
+    # Isolate the bridge branch: between "if [[ -d .../bridge" and the "fi"
+    # that closes it, the path after the port loop must not echo route_dev.
+    local branch
+    # shellcheck disable=SC2016  # literal source text, not an expansion
+    branch=$(sed -n '/-d "\/sys\/class\/net\/\$route_dev\/bridge"/,/^  fi$/p' "$f")
+
+    if [[ -z "$branch" ]]; then
+      missing+="$(basename "$f"):no-bridge-branch "
+      continue
+    fi
+
+    # After the loop closes, the branch must terminate (return or empty echo)
+    # rather than falling through to the route_dev fallback.
+    local after_loop
+    after_loop=$(echo "$branch" | sed -n '/^    done$/,$p')
+
+    if ! echo "$after_loop" | grep -qE 'return 1|echo ""'; then
+      missing+="$(basename "$f"):falls-through "
+    fi
+  done
+
+  if [[ -z "$missing" ]]; then
+    test_pass
+  else
+    test_fail "Bridge fallthrough possible in: $missing"
+  fi
+}
+
+# The summary reads config by grepping, never by sourcing - a malformed or
+# hostile config file must not be able to execute anything.
+test_summary_does_not_source_config() {
+  test_start "Summary: reads config without sourcing it"
+
+  local summary="$SCRIPT_DIR/../scripts/netwatch-status-summary.sh"
+  if [[ ! -f "$summary" ]]; then
+    test_fail "Summary script not found: $summary"
+    return
+  fi
+
+  # No `. "$CONFIG_FILE"` or `source` of the config
+  # shellcheck disable=SC2016  # literal source text, not an expansion
+  if grep -qE '^\s*(\.|source)\s+"?\$(CONFIG_FILE|NETPROBE_CONFIG)' "$summary"; then
+    test_fail "Summary sources the config file instead of parsing it"
+    return
+  fi
+
+  setup_mock_env
+  local cfg="$MOCK_DIR/evil.conf"
+  local canary="$MOCK_DIR/canary"
+
+  # If this were sourced, the command substitution would run
+  cat > "$cfg" <<CFGEOF
+DRY_RUN=1
+EVIL=\$(touch "$canary")
+CFGEOF
+
+  CONFIG_FILE="$cfg" NETPROBE_CONFIG="$MOCK_DIR/none" bash "$summary" >/dev/null 2>&1 || true
+
+  local leaked=0
+  [[ -f "$canary" ]] && leaked=1
+  cleanup_mock_env
+
+  if (( leaked )); then
+    test_fail "Config contents were executed - the summary must not source config"
+  else
+    test_pass
+  fi
+}
+
+#
+# Packaging Tests
+#
+
+# dpkg silently overwrites a package file on upgrade unless it is declared a
+# conffile. /etc/default/netwatch-agent holds the webhook URL, DRY_RUN, and
+# custom targets - losing those on `dpkg -i` is silent data loss, which is
+# exactly what happened on a real host during the v1.2.0 upgrade.
+test_deb_declares_conffiles() {
+  test_start "Packaging: config files are declared as dpkg conffiles"
+
+  local builder="$SCRIPT_DIR/../scripts/build-deb.sh"
+  if [[ ! -f "$builder" ]]; then
+    test_fail "build-deb.sh not found: $builder"
+    return
+  fi
+
+  if ! grep -q 'DEBIAN/conffiles' "$builder"; then
+    test_fail "No DEBIAN/conffiles is written; dpkg will clobber local config"
+    return
+  fi
+
+  local missing=""
+  local f
+  for f in /etc/default/netwatch-agent /etc/default/netwatch-netprobe; do
+    grep -qF "$f" "$builder" || missing+="$f "
+  done
+
+  if [[ -n "$missing" ]]; then
+    test_fail "Not declared as conffiles: $missing"
+    return
+  fi
+
+  test_pass
+}
+
+# The agent config can hold a webhook token, so it must not be world-readable.
+# install.sh uses 0640; the package must match.
+test_deb_config_permissions() {
+  test_start "Packaging: configs are installed 0640, not world-readable"
+
+  local builder="$SCRIPT_DIR/../scripts/build-deb.sh"
+  if [[ ! -f "$builder" ]]; then
+    test_fail "build-deb.sh not found: $builder"
+    return
+  fi
+
+  local bad=""
+  if grep -qE 'install -m 0644 .*etc/default/netwatch-agent"' "$builder"; then
+    bad+="netwatch-agent "
+  fi
+  if grep -qE 'install -m 0644 .*etc/default/netwatch-netprobe"' "$builder"; then
+    bad+="netwatch-netprobe "
+  fi
+
+  if [[ -n "$bad" ]]; then
+    test_fail "Installed world-readable despite holding secrets: $bad"
+  else
+    test_pass
+  fi
+}
+
+# install.sh appends the digest settings to the sampler config. The package must
+# do the same, or a .deb install ships no DIGEST_* keys and the digest runs on
+# built-in defaults with no way for the operator to see or change them.
+test_deb_ships_digest_settings() {
+  test_start "Packaging: digest settings are shipped in the sampler config"
+
+  local builder="$SCRIPT_DIR/../scripts/build-deb.sh"
+  if [[ ! -f "$builder" ]]; then
+    test_fail "build-deb.sh not found: $builder"
+    return
+  fi
+
+  if grep -q 'netwatch-digest.conf.*>>.*etc/default/netwatch-netprobe' "$builder"; then
+    test_pass
+  else
+    test_fail "netwatch-digest.conf is never appended to the sampler config"
+  fi
+}
+
 #
 # Daily Digest Tests
 #
@@ -1571,6 +1926,14 @@ test_boot_grace_calculation
 
 # Regression tests (errexit safety)
 test_dryrun_does_not_arm_cooldown
+test_digest_embed_format
+test_digest_embed_escapes_window_hours
+test_summary_reports_armed_state
+test_summary_does_not_source_config
+test_detect_iface_never_reports_bridge
+test_deb_declares_conffiles
+test_deb_config_permissions
+test_deb_ships_digest_settings
 test_digest_first_run_has_no_fake_delta
 test_digest_redacts_host_identifiers
 test_digest_template_placeholders_substituted

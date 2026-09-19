@@ -35,6 +35,7 @@ NETPROBE_LOGROTATE="/etc/logrotate.d/netwatch-netprobe"
 DIGEST_SCRIPT="/usr/local/sbin/netwatch-digest.sh"
 DIGEST_UNIT="/etc/systemd/system/netwatch-digest.service"
 DIGEST_TIMER="/etc/systemd/system/netwatch-digest.timer"
+SUMMARY_SCRIPT="/usr/local/sbin/netwatch-status-summary.sh"
 NETPROBE_LOG_DIR="/var/log/netwatch"
 
 # Source files
@@ -50,6 +51,7 @@ SRC_DIGEST="$PROJECT_ROOT/src/netwatch-digest.sh"
 SRC_DIGEST_CONF="$PROJECT_ROOT/config/netwatch-digest.conf"
 SRC_DIGEST_UNIT="$PROJECT_ROOT/config/netwatch-digest.service"
 SRC_DIGEST_TIMER="$PROJECT_ROOT/config/netwatch-digest.timer"
+SRC_SUMMARY="$PROJECT_ROOT/scripts/netwatch-status-summary.sh"
 
 # Install the NIC sampler unless explicitly disabled: INSTALL_NETPROBE=0
 INSTALL_NETPROBE="${INSTALL_NETPROBE:-1}"
@@ -168,6 +170,15 @@ log_info "Creating state directory $PERSIST_DIR"
 $SUDO mkdir -p "$PERSIST_DIR"
 $SUDO chmod 0750 "$PERSIST_DIR"
 $SUDO chown root:root "$PERSIST_DIR"
+
+#
+# Status summary - installed regardless of INSTALL_NETPROBE, since knowing
+# whether the watchdog is armed matters even without the NIC tooling.
+#
+
+$SUDO cp "$SRC_SUMMARY" "$SUMMARY_SCRIPT"
+$SUDO chmod 0755 "$SUMMARY_SCRIPT"
+$SUDO chown root:root "$SUMMARY_SCRIPT"
 
 #
 # Install NIC health sampler (optional companion)
@@ -294,25 +305,19 @@ echo
 echo "Service status:"
 $SUDO /usr/bin/systemctl status netwatch-agent --no-pager --lines=5 || true
 
-echo
-if [[ "$INSTALL_NETPROBE" == "1" ]] && [[ -f "$NETPROBE_SCRIPT" ]]; then
-  echo
-  echo "NIC health sampler:"
-  $SUDO /usr/bin/systemctl list-timers netwatch-netprobe --no-pager 2>/dev/null | head -3 || true
+# Report the resulting state. The file-copy logging above says what was
+# written; this says what is actually armed - the question that matters, and
+# the one a silent config reset would otherwise hide.
+if [[ -x "$SUMMARY_SCRIPT" ]]; then
+  $SUDO "$SUMMARY_SCRIPT" || true
 fi
 
-echo
 echo "Quick reference:"
+echo "  - Status again:   netwatch-status-summary.sh"
 echo "  - View logs:      journalctl -u netwatch-agent -f"
-echo "  - NIC samples:    journalctl -t netwatch-netprobe -f"
 echo "  - NIC anomalies:  journalctl -t netwatch-netprobe -p crit --no-pager"
-echo "  - Stop service:   /usr/bin/systemctl stop netwatch-agent"
-echo "  - Disable:        /usr/bin/systemctl disable netwatch-agent"
+echo "  - Send a digest:  systemctl start netwatch-digest.service"
 echo "  - Pause watchdog: touch /etc/netwatch-agent.disable"
-echo "  - Resume:         rm /etc/netwatch-agent.disable"
 echo "  - Edit config:    nano $CONFIG_FILE"
 echo "  - Uninstall:      $SCRIPT_DIR/uninstall.sh"
 echo
-
-log_info "Configuration: $CONFIG_FILE"
-log_info "Edit the config and restart: /usr/bin/systemctl restart netwatch-agent"

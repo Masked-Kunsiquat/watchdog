@@ -15,7 +15,7 @@ This document describes manual integration tests for Netwatch on real Debian/Pro
 
 ```bash
 # Clone repository
-git clone https://github.com/your-org/watchdog.git
+git clone https://github.com/Masked-Kunsiquat/watchdog.git
 cd watchdog
 
 # Run installer
@@ -41,7 +41,7 @@ journalctl -u netwatch-agent -n 50
 
 Expected log entries:
 ```
-Starting WAN watchdog (targets: 1.1.1.1 8.8.8.8 9.9.9.9, threshold: 1/3, window: 600s)
+Starting WAN watchdog (targets: 1.1.1.1 8.8.8.8 9.9.9.9, threshold: 1/1.1.1.1,8.8.8.8,9.9.9.9, window: 600s)
 ```
 
 ## Test Suite
@@ -439,10 +439,186 @@ sudo iptables-restore < /tmp/iptables-backup.rules
 
 ---
 
+## Test Suite: NIC Sampler and Digest
+
+These components are timer-driven and independent of the agent, so they can be
+tested without disturbing it.
+
+### Test 9: Sampler Resolves the Physical Interface
+
+**Objective**: Verify the sampler reports the physical NIC, not the bridge
+
+On Proxmox the default route points at `vmbr0`, but counters live on the
+enslaved port — and the bridge looks healthy while the NIC beneath it is
+wedged. Reporting the bridge would make the sampler useless.
+
+**Steps**:
+```bash
+sudo systemctl start netwatch-netprobe.service
+journalctl -t netwatch-netprobe -n 1 --no-pager
+```
+
+**Expected Result**: `iface=` names the physical port (`eno1`, `enp0s25`), not
+`vmbr0`. Counters and offload state are populated, not `unknown`.
+
+**Pass Criteria**: The physical interface is reported with real counter values
+
+---
+
+### Test 10: Sampler Detects Offload Drift
+
+**Objective**: Verify the sampler notices offloads silently re-enabling
+
+**Steps**:
+1. Confirm offloads are off:
+   ```bash
+   ethtool -k eno1 | grep -E 'tcp-segmentation|generic-receive'
+   ```
+2. Re-enable one deliberately:
+   ```bash
+   sudo ethtool -K eno1 tso on
+   ```
+3. Trigger a sample and check:
+   ```bash
+   sudo systemctl start netwatch-netprobe.service
+   journalctl -t netwatch-netprobe -n 1 --no-pager
+   ```
+4. Restore:
+   ```bash
+   sudo ethtool -K eno1 tso off
+   ```
+
+**Expected Result**: The sample is logged at `crit` with
+`ANOMALY [offloads-re-enabled]`
+
+**Pass Criteria**: Drift is detected and escalated, not logged as routine
+
+---
+
+### Test 11: Digest Verdict and Redaction
+
+**Objective**: Verify the digest classifies correctly and leaks no identifiers
+
+**Steps**:
+```bash
+sudo systemctl start netwatch-digest.service
+journalctl -t netwatch-digest -n 2 --no-pager
+```
+
+**Expected Result**:
+- On a healthy host: `Digest [HOLDING] ... notes=all clear`
+- The line contains no IP or MAC address
+- `iface=` is present (a local label, safe to include)
+- If a webhook is configured: `Digest webhook sent`
+
+**Verify redaction explicitly**:
+```bash
+journalctl -t netwatch-digest -n 1 --no-pager   | grep -qE '([0-9]{1,3}\.){3}[0-9]{1,3}|([0-9a-f]{2}:){5}[0-9a-f]{2}'   && echo "LEAK" || echo "clean"
+```
+
+**Pass Criteria**: Correct verdict, and `clean` from the redaction check
+
+---
+
+### Test 12: Digest Deltas Need a Baseline
+
+**Objective**: Verify the first digest does not fabricate a delta
+
+**Steps**:
+1. Remove the baseline:
+   ```bash
+   sudo rm -f /var/lib/netwatch-agent/digest-state.dat
+   ```
+2. Run twice, a minute apart:
+   ```bash
+   sudo systemctl start netwatch-digest.service
+   sleep 60
+   sudo systemctl start netwatch-digest.service
+   journalctl -t netwatch-digest -n 2 --no-pager
+   ```
+
+**Expected Result**:
+- First run: `tx_restart=N(Δn/a)` — no baseline yet
+- Second run: `tx_restart=N(Δ0)` or a small real delta
+
+**Pass Criteria**: The first run reports `n/a`, never the full counter value
+
+---
+
+### Test 13: Remediation Round-Trip
+
+**Objective**: Verify apply and revert are symmetric and non-destructive
+
+> Changes live NIC settings. Run from the console, or expect a brief blip.
+
+**Steps**:
+1. Record the starting state:
+   ```bash
+   sudo scripts/netwatch-nic-remediation.sh --status
+   cp /etc/network/interfaces /tmp/interfaces.before
+   ```
+2. Apply, then verify:
+   ```bash
+   sudo scripts/netwatch-nic-remediation.sh --apply-offloads
+   ethtool -k eno1 | grep -E 'tcp-segmentation|generic-segmentation|generic-receive'
+   ```
+3. Confirm the hook survives an interface bounce:
+   ```bash
+   sudo ifreload -a
+   ethtool -k eno1 | grep tcp-segmentation
+   ```
+4. Revert and diff:
+   ```bash
+   sudo scripts/netwatch-nic-remediation.sh --revert-offloads
+   diff /tmp/interfaces.before /etc/network/interfaces && echo "identical"
+   ```
+
+**Expected Result**:
+- After apply: all three read `off`, and a `post-up` hook is present
+- After `ifreload`: still `off` (the hook fired)
+- After revert: `interfaces` is byte-identical to the backup
+
+**Pass Criteria**: Round-trip restores the original file exactly
+
+---
+
+### Test 14: Package Upgrade Preserves Config
+
+**Objective**: Verify `dpkg -i` does not clobber local settings
+
+This is a regression test. Before v1.2.1 the config was not declared a dpkg
+conffile, and upgrading silently replaced it — losing the webhook URL,
+`DRY_RUN`, and custom targets.
+
+**Steps**:
+1. Mark the config:
+   ```bash
+   echo "# upgrade marker" | sudo tee -a /etc/default/netwatch-agent
+   sudo grep -c 'DRY_RUN=1' /etc/default/netwatch-agent
+   ```
+2. Reinstall the same or a newer `.deb`:
+   ```bash
+   sudo dpkg -i netwatch-agent_<version>_all.deb
+   ```
+3. Verify survival:
+   ```bash
+   sudo grep -c 'upgrade marker' /etc/default/netwatch-agent   # want 1
+   sudo grep -c 'DRY_RUN=1' /etc/default/netwatch-agent        # unchanged
+   ls -l /etc/default/netwatch-agent                           # want 0640
+   ```
+
+**Expected Result**: The marker survives; dpkg may report a conffile prompt or
+leave a `.dpkg-dist` file. Permissions are `0640`, not world-readable.
+
+**Pass Criteria**: Local edits survive the upgrade
+
+---
+
 ## Regression Test Checklist
 
-Before each release, run this checklist:
+Before each release:
 
+**WAN agent**
 - [ ] Test 1: Normal operation (5 min baseline)
 - [ ] Test 2: Simulated outage triggers reboot
 - [ ] Test 3: WAN recovery cancels reboot
@@ -450,23 +626,33 @@ Before each release, run this checklist:
 - [ ] Test 5: Cooldown prevents boot loop
 - [ ] Test 6: Boot grace delays monitoring
 - [ ] Test 7: MIN_OK threshold respected
-- [ ] Test 8a: fping mode works
-- [ ] Test 8b: ping fallback works
+- [ ] Test 8a/8b: fping and ping fallback
 - [ ] Performance: Timing accuracy ±5%
+
+**NIC tooling**
+- [ ] Test 9: Sampler resolves the physical interface
+- [ ] Test 10: Offload drift detected
+- [ ] Test 11: Digest verdict correct, no identifiers leaked
+- [ ] Test 12: First digest reports no fake delta
+- [ ] Test 13: Remediation round-trip is clean
+
+**Packaging**
+- [ ] Test 14: Upgrade preserves config
 - [ ] Uninstall: Clean removal
-- [ ] Uninstall: Config preservation with --keep-config
+- [ ] Uninstall: Config preserved with `--keep-config`
 
 ---
 
 ## Automated Test Execution
 
-For CI/CD integration, see:
-- [tests/unit-tests.sh](../tests/unit-tests.sh) - Unit tests for probe logic
-- [tests/smoke-test.sh](../tests/smoke-test.sh) - Automated smoke tests
+```bash
+cd tests && bash unit-tests.sh    # 37 tests, no root or network needed
+cd tests && bash smoke-test.sh    # 6 end-to-end tests
+```
 
-Manual integration tests require real network manipulation and cannot be fully automated.
+The manual tests above require real network manipulation and NIC access, so
+they cannot be fully automated.
 
 ---
 
-**Last Updated**: 2025-12-08
 **Maintained By**: Netwatch Contributors
