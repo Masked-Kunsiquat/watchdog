@@ -857,9 +857,11 @@ CURLEOF
     if python3 -c "import json; json.load(open('$capture'))" 2>/dev/null       || python -c "import json; json.load(open('$capture'))" 2>/dev/null; then
       result="ok"
     else
-      # No parser: the quote must appear escaped inside the field name
+      # No parser available: the quote must appear escaped inside the field
+      # name. \134 is the octal escape for a backslash, which avoids quoting
+      # one inside a shell literal.
       local bs esc_quote
-      bs=$(printf '\')
+      bs=$(printf '\134')
       esc_quote="${bs}\""
       grep -qF "Hangs (24${esc_quote}xh)" "$capture" && result="ok"
     fi

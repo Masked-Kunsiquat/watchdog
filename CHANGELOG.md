@@ -42,6 +42,21 @@ targets. Observed on a real host.
 - JSON escaping extracted into a reusable `json_escape()` now that both payload
   shapes need it.
 
+### Documentation
+
+- **Removed `GAMEPLAN.md`.** It still read "Status: Ready for implementation"
+  and planned building v1.0.0 as future work. Git history preserves it; the
+  remaining wishlist moved to AGENTS.md §12.
+- **AGENTS.md extended to all three components.** It specified only the WAN
+  agent and never mentioned the sampler, digest, or e1000e work. Adds §13
+  covering both timer-driven components and the remediation tooling, and
+  updates Non-Goals (DNS/HTTP checks shipped in v1.0.0; the webhook is a single
+  `curl` call, not an alerting stack).
+- **`docs/integration-testing.md`**: fixed a broken clone URL and a stale
+  expected-log line, and added six manual tests covering interface resolution,
+  offload drift, digest verdict and redaction, delta baselines, the remediation
+  round-trip, and config survival across a package upgrade.
+
 ## [v1.2.0] - 2026-09-18
 
 **Daily diagnostic digest**, plus a fix for a regression introduced in v1.1.0.
@@ -254,7 +269,7 @@ This release marks the completion of Phase 5 with comprehensive documentation, t
 |----------|---------|----------|
 | [README.md](README.md) | Quick start, operations, troubleshooting | Operators/Users |
 | [AGENTS.md](AGENTS.md) | Technical specification | Developers |
-| [GAMEPLAN.md](GAMEPLAN.md) | Implementation phases | Project management |
+| GAMEPLAN.md (removed in v1.2.1) | Implementation phases | Project management |
 | [CHANGELOG.md](CHANGELOG.md) | Version history | All stakeholders |
 
 ### Stability Notes
